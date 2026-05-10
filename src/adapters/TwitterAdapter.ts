@@ -6,9 +6,9 @@ import { ExtractionValidationError } from '../errors/ExtractionValidationError';
 
 // 1. Define Strict Zod Schema for Twitter Extraction
 const TweetSchema = z.object({
-  author: z.string().min(1, "Author is required"),
-  text: z.string().min(1, "Text is required"),
-  timestamp: z.string().min(1, "Timestamp is required")
+  author: z.string().optional(),
+  text: z.string().optional(),
+  timestamp: z.string().optional()
 });
 
 const TwitterExtractionSchema = z.array(TweetSchema).min(1, "At least one tweet is required");

@@ -67,8 +67,8 @@ export class DefaultAdapter extends BaseAdapter {
       
       // Execute Playwright navigation if not already on the target URL
       if (page.url() === 'about:blank' || page.url() !== url) {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch(e) {}
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(2000); // 2 second explicit wait for React hydration
       }
 
       // --- Post-Injection Session Validation ---

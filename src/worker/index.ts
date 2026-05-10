@@ -24,6 +24,16 @@ const pool = new Pool({
 
 const warmingQueue = new Queue('session-warming', { connection: redis });
 
+// Persistent browser instance
+let browser: any;
+
+const initBrowser = async () => {
+  console.log('Initializing persistent browser instance...');
+  browser = await chromium.launch({
+    headless: true,
+  });
+};
+
 // This simulates the plugin system
 const runScraper = async (job: Job) => {
   const { platform, url, options = {} } = job.data;
@@ -38,11 +48,7 @@ const runScraper = async (job: Job) => {
     await job.updateData({ ...job.data, options });
   }
 
-  // 1. Launch Browser
-  const browser = await chromium.launch({
-    headless: true, // or false for stealth
-  });
-  
+  // Create isolated context from persistent browser
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
   });
@@ -96,8 +102,8 @@ const runScraper = async (job: Job) => {
         url: new URL(url).origin 
       });
       
-      // Move current job to delayed to wait for re-warming (e.g. 30 seconds)
-      await job.moveToDelayed(Date.now() + 30000, job.token);
+      // Removed manual moveToDelayed to prevent lock corruption.
+      // BullMQ native retry logic with backoff will handle the delay safely.
       throw err;
     }
     if (err.name === 'BotChallengeError') {
@@ -113,59 +119,67 @@ const runScraper = async (job: Job) => {
     job.log(`Extraction failed: ${err.message}`);
     throw err;
   } finally {
+    // Only close context and page, keeping the browser instance alive
     await context.close();
-    await browser.close();
   }
 };
 
-const worker = new Worker('scrape-jobs', async (job) => {
-  return runScraper(job);
-}, { 
-  connection: redis,
-  concurrency: 5 // Process 5 jobs concurrently per worker instance
-});
+const startWorker = async () => {
+  await initBrowser();
 
-const publisher = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
-  maxRetriesPerRequest: null,
-});
+  const worker = new Worker('scrape-jobs', async (job) => {
+    return runScraper(job);
+  }, { 
+    connection: redis,
+    concurrency: 5 // Process 5 jobs concurrently per worker instance
+  });
 
-worker.on('progress', (job, progress) => {
-  if (job) {
-    publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'progress', progress }));
-  }
-});
+  const publisher = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+    maxRetriesPerRequest: null,
+  });
 
-worker.on('completed', async (job, result) => {
-  console.log(`Job ${job.id} has completed!`);
-  publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'completed', data: result }));
-
-  const webhookUrl = job.data?.options?.webhook_url;
-  if (webhookUrl) {
-    try {
-      console.log(`Delivering webhook for job ${job.id} to ${webhookUrl}...`);
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jobId: job.id,
-          status: 'completed',
-          data: result
-        })
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      console.log(`Webhook delivered successfully for job ${job.id}`);
-    } catch (e: any) {
-      console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
+  worker.on('progress', (job, progress) => {
+    if (job) {
+      publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'progress', progress }));
     }
-  }
+  });
+
+  worker.on('completed', async (job, result) => {
+    console.log(`Job ${job.id} has completed!`);
+    publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'completed', data: result }));
+
+    const webhookUrl = job.data?.options?.webhook_url;
+    if (webhookUrl) {
+      try {
+        console.log(`Delivering webhook for job ${job.id} to ${webhookUrl}...`);
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId: job.id,
+            status: 'completed',
+            data: result
+          })
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        console.log(`Webhook delivered successfully for job ${job.id}`);
+      } catch (e: any) {
+        console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
+      }
+    }
+  });
+
+  worker.on('failed', (job, err) => {
+    console.error(`Job ${job?.id} has failed with ${err.message}`);
+    if (job) {
+      publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'failed', error: err.message }));
+    }
+  });
+
+  console.log('Worker is running and listening to scrape-jobs...');
+};
+
+startWorker().catch(err => {
+  console.error('Failed to start worker:', err);
+  process.exit(1);
 });
-
-worker.on('failed', (job, err) => {
-  console.error(`Job ${job?.id} has failed with ${err.message}`);
-  if (job) {
-    publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'failed', error: err.message }));
-  }
-});
-
-console.log('Worker is running and listening to scrape-jobs...');
-
