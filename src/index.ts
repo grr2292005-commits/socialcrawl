@@ -1,5 +1,5 @@
 import Fastify, { FastifyRequest } from 'fastify';
-import fastifyWebsocket, { WebSocket as SocketStream } from '@fastify/websocket';
+import fastifyWebsocket, { SocketStream } from '@fastify/websocket';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 
@@ -74,25 +74,25 @@ fastify.register(async function (app) {
     subscriber.subscribe(channel, (err) => {
       if (err) {
         app.log.error(`Failed to subscribe to ${channel}`);
-        connection.send(JSON.stringify({ error: 'Failed to subscribe' }));
+        connection.socket.send(JSON.stringify({ error: 'Failed to subscribe' }));
       }
     });
 
     subscriber.on('message', (ch, message) => {
       if (ch === channel) {
-        connection.send(message);
+        connection.socket.send(message);
         
         try {
           const parsed = JSON.parse(message);
           if (parsed.status === 'completed' || parsed.status === 'failed') {
             subscriber.quit();
-            connection.close();
+            connection.socket.close();
           }
         } catch (e) {}
       }
     });
 
-    connection.on('close', () => {
+    connection.socket.on('close', () => {
       subscriber.quit();
     });
   });
