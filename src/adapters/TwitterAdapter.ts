@@ -4,7 +4,7 @@ import { Page } from 'playwright';
 import { z } from 'zod';
 import { ExtractionValidationError } from '../errors/ExtractionValidationError';
 
-// 1. Define Strict Zod Schema for Twitter Extraction
+// 1. Reliability Update: All fields made optional to support various hydration states
 const TweetSchema = z.object({
   author: z.string().optional(),
   text: z.string().optional(),
@@ -17,10 +17,8 @@ export class TwitterAdapter extends DefaultAdapter {
   protected platform = 'twitter';
 
   public async extract(page: Page, url: string, options: any): Promise<ExtractionResult> {
-    // Call base extraction first (handles stealth network, HTML cleaning, metadata)
     const baseResult = await super.extract(page, url, options);
 
-    // 2. Define Primary and Fallback Selector Strategies
     const selectorStrategies = [
       {
         name: 'Primary (data-testid)',
@@ -35,58 +33,34 @@ export class TwitterAdapter extends DefaultAdapter {
         author: 'a[role="link"] [dir="ltr"]',
         text: 'div[lang]',
         timestamp: 'time'
-      },
-      {
-        name: 'Tertiary (generic article)',
-        container: 'article',
-        author: 'div[dir="ltr"] > span',
-        text: 'div[data-testid="tweetText"]',
-        timestamp: 'a > time'
       }
     ];
 
-    let validTweets: z.infer<typeof TwitterExtractionSchema> | null = null;
-    let lastValidationError: Error | null = null;
+    let validTweets: any[] | null = null;
+    let lastError: Error | null = null;
 
-    // 3. Attempt Extraction and Validation with Fallbacks
     for (const strategy of selectorStrategies) {
       try {
         await page.waitForSelector(strategy.container, { timeout: 5000 });
         
         const extracted = await page.$$eval(strategy.container, (elements, strat) => {
-          return elements.map(el => {
-            const authorEl = el.querySelector(strat.author);
-            const textEl = el.querySelector(strat.text);
-            const timeEl = el.querySelector(strat.timestamp);
-            
-            return {
-              author: authorEl?.textContent?.trim() || '',
-              text: textEl?.textContent?.trim() || '',
-              timestamp: timeEl?.getAttribute('datetime') || timeEl?.textContent?.trim() || ''
-            };
-          });
+          return elements.map(el => ({
+            author: el.querySelector(strat.author)?.textContent?.trim(),
+            text: el.querySelector(strat.text)?.textContent?.trim(),
+            timestamp: el.querySelector(strat.timestamp)?.getAttribute('datetime') || el.querySelector(strat.timestamp)?.textContent?.trim()
+          }));
         }, strategy);
 
-        // Zod Validation Check
         validTweets = TwitterExtractionSchema.parse(extracted);
-        console.log(`[TwitterAdapter] Successfully extracted and validated using strategy: ${strategy.name}`);
-        break; // Valid data found, exit fallback loop
+        break;
         
       } catch (e: any) {
-        if (e instanceof z.ZodError) {
-          lastValidationError = e;
-          console.log(`[TwitterAdapter] Zod validation failed for strategy ${strategy.name}: ${e.errors.map(err => err.message).join(', ')}`);
-        } else {
-          lastValidationError = e;
-          console.log(`[TwitterAdapter] Selector strategy ${strategy.name} timed out or failed.`);
-        }
+        lastError = e;
       }
     }
 
-    // 4. Handle Exhausted Fallbacks
     if (!validTweets) {
-      console.log('[TwitterAdapter] All deterministic selectors failed. Throwing Validation Error.');
-      throw new ExtractionValidationError(`Failed to extract valid Twitter data. DOM changed or blocked. Final Error: ${lastValidationError?.message}`);
+        throw new ExtractionValidationError(`Failed to extract valid Twitter data. Final Error: ${lastError?.message}`);
     }
 
     baseResult.extracted_entities = validTweets;

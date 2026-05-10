@@ -1,4 +1,4 @@
-import { Worker, Job } from 'bullmq';
+import { Worker, Job, Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { chromium } from 'playwright-extra';
 // @ts-ignore
@@ -10,7 +10,6 @@ import { ExtractionValidationError } from '../errors/ExtractionValidationError';
 import { AuthWallError } from '../errors/AuthWallError';
 import { v4 as uuidv4 } from 'uuid';
 import { Pool } from 'pg';
-import { Queue } from 'bullmq';
 
 chromium.use(stealthPlugin());
 
@@ -24,7 +23,7 @@ const pool = new Pool({
 
 const warmingQueue = new Queue('session-warming', { connection: redis });
 
-// Persistent browser instance
+// 1. Persistent Browser Instance
 let browser: any;
 
 const initBrowser = async () => {
@@ -48,7 +47,7 @@ const runScraper = async (job: Job) => {
     await job.updateData({ ...job.data, options });
   }
 
-  // Create isolated context from persistent browser
+  // 3. Create isolated context from persistent browser
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
   });
@@ -71,14 +70,12 @@ const runScraper = async (job: Job) => {
       }
     }
 
-    // 3. Execute Navigation
+    // 3. Execute Navigation (Placeholder - logic is within adapters)
     await job.updateProgress(10);
-    // Note: DefaultAdapter now handles navigation and AuthWall validation internally
     
     // 4. Transformation & Extraction using Adapter
     const adapter = AdapterFactory.getAdapter(url, platform);
     
-    // Provide default formats if not specified
     const extractionOptions = {
       formats: options.formats || ['markdown', 'text', 'metadata', 'chunks'],
       ...options
@@ -102,8 +99,7 @@ const runScraper = async (job: Job) => {
         url: new URL(url).origin 
       });
       
-      // Removed manual moveToDelayed to prevent lock corruption.
-      // BullMQ native retry logic with backoff will handle the delay safely.
+      // 4. Fix Lock Error: Removed moveToDelayed. Rely on throw for native BullMQ retry.
       throw err;
     }
     if (err.name === 'BotChallengeError') {
@@ -119,19 +115,20 @@ const runScraper = async (job: Job) => {
     job.log(`Extraction failed: ${err.message}`);
     throw err;
   } finally {
-    // Only close context and page, keeping the browser instance alive
+    // 3. Only close context, keeping the browser instance alive
     await context.close();
   }
 };
 
 const startWorker = async () => {
+  // 2. Initialize browser before starting the worker
   await initBrowser();
 
   const worker = new Worker('scrape-jobs', async (job) => {
     return runScraper(job);
   }, { 
     connection: redis,
-    concurrency: 5 // Process 5 jobs concurrently per worker instance
+    concurrency: 5 
   });
 
   const publisher = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
@@ -151,18 +148,12 @@ const startWorker = async () => {
     const webhookUrl = job.data?.options?.webhook_url;
     if (webhookUrl) {
       try {
-        console.log(`Delivering webhook for job ${job.id} to ${webhookUrl}...`);
         const response = await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jobId: job.id,
-            status: 'completed',
-            data: result
-          })
+          body: JSON.stringify({ jobId: job.id, status: 'completed', data: result })
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        console.log(`Webhook delivered successfully for job ${job.id}`);
       } catch (e: any) {
         console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
       }
