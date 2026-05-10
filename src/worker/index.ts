@@ -59,7 +59,6 @@ const runScraper = async (job: Job) => {
     if (detectedPlatform && detectedPlatform !== 'default') {
       try {
         const origin = new URL(url).origin;
-        // LocalStorage requires the page to be on the target origin first
         await page.goto(origin, { waitUntil: 'commit', timeout: 15000 });
         const injected = await SessionInjector.injectSession(detectedPlatform, context, page);
         if (injected) {
@@ -70,7 +69,6 @@ const runScraper = async (job: Job) => {
       }
     }
 
-    // 3. Execute Navigation (Placeholder - logic is within adapters)
     await job.updateProgress(10);
     
     // 4. Transformation & Extraction using Adapter
@@ -99,7 +97,7 @@ const runScraper = async (job: Job) => {
         url: new URL(url).origin 
       });
       
-      // 4. Fix Lock Error: Removed moveToDelayed. Rely on throw for native BullMQ retry.
+      // 5. Fix Lock Error: Removed manual moveToDelayed. Rely on throw for native BullMQ retry.
       throw err;
     }
     if (err.name === 'BotChallengeError') {
@@ -115,7 +113,7 @@ const runScraper = async (job: Job) => {
     job.log(`Extraction failed: ${err.message}`);
     throw err;
   } finally {
-    // 3. Only close context, keeping the browser instance alive
+    // 4. Only close context, keeping the browser instance alive
     await context.close();
   }
 };
@@ -128,7 +126,7 @@ const startWorker = async () => {
     return runScraper(job);
   }, { 
     connection: redis,
-    concurrency: 5 
+    concurrency: 5 // Process 5 jobs concurrently per worker instance
   });
 
   const publisher = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
@@ -148,12 +146,18 @@ const startWorker = async () => {
     const webhookUrl = job.data?.options?.webhook_url;
     if (webhookUrl) {
       try {
+        console.log(`Delivering webhook for job ${job.id} to ${webhookUrl}...`);
         const response = await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobId: job.id, status: 'completed', data: result })
+          body: JSON.stringify({
+            jobId: job.id,
+            status: 'completed',
+            data: result
+          })
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        console.log(`Webhook delivered successfully for job ${job.id}`);
       } catch (e: any) {
         console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
       }

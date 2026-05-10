@@ -44,11 +44,13 @@ export class DefaultAdapter extends BaseAdapter {
                              fetchResult.html.includes('<app-root>');
 
         if (textContentLength < 500 || hasSPAMounts) {
+          console.log(`[Adapter] Stealth fetch returned sparse SPA shell (Text length: ${textContentLength}).`);
           isSparseSPA = true;
         }
       }
 
       if (fetchResult.statusCode === 200 && !isChallenge && !isSparseSPA) {
+        console.log(`[Adapter] Stealth fetch succeeded for ${url}. Skipping Playwright.`);
         rawHtml = fetchResult.html;
       }
     }
@@ -57,17 +59,18 @@ export class DefaultAdapter extends BaseAdapter {
       console.log(`[Adapter] Stealth fetch skipped or failed. Falling back to Playwright.`);
       usedPlaywright = true;
       
-      // 1. Optimize Navigation: Use domcontentloaded and faster timeout
+      // 1. Speed Optimization: Ensure we use domcontentloaded for faster initial render
       if (page.url() === 'about:blank' || page.url() !== url) {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        // 3. Deterministic hydration window instead of waiting for noisy trackers (networkidle)
-        await page.waitForTimeout(1500);
+        // 3. Deterministic hydration window instead of waiting for endless background trackers
+        await page.waitForTimeout(2000);
       }
 
-      // Post-Injection Session Validation
+      // --- Post-Injection Session Validation ---
       const currentUrl = page.url();
       const content = await page.content();
+      
       const isAuthWall = currentUrl.includes('/login') || 
                          currentUrl.includes('/authwall') || 
                          currentUrl.includes('/signup') ||
@@ -75,13 +78,14 @@ export class DefaultAdapter extends BaseAdapter {
                          content.includes('sign in') && content.includes('password');
 
       if (isAuthWall) {
+        console.log(`[Adapter] Auth Wall detected at ${currentUrl}. Flagging session as invalid.`);
         throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
       }
       
       rawHtml = content;
     }
     
-    // Extraction Pipeline
+    // 1. Metadata Extraction
     const metadata = MetadataExtractor.extract(rawHtml);
     result.title = metadata.title;
     result.description = metadata.description;
@@ -94,38 +98,58 @@ export class DefaultAdapter extends BaseAdapter {
       result.html = rawHtml;
     }
 
+    // 2. Advanced Boilerplate Removal & DOM Cleaning
     const cleanedRawHtml = DOMCleaner.cleanContent(rawHtml);
+
+    // 3. Mozilla Readability Processing
     const cleanedArticle = ReadabilityExtractor.extract(cleanedRawHtml, url);
     
     if (cleanedArticle) {
-      if (formats.includes('cleaned_html')) result.cleaned_html = cleanedArticle.content;
-      if (formats.includes('text')) result.text = cleanedArticle.textContent;
+      if (formats.includes('cleaned_html')) {
+        result.cleaned_html = cleanedArticle.content;
+      }
+      
+      if (formats.includes('text')) {
+        result.text = cleanedArticle.textContent;
+      }
 
       let markdownForChunking = '';
       if (formats.includes('markdown') || formats.includes('chunks')) {
         const markdownFormatter = new MarkdownFormatter();
         markdownForChunking = markdownFormatter.format(cleanedArticle.content);
-        if (formats.includes('markdown')) result.markdown = markdownForChunking;
+        if (formats.includes('markdown')) {
+          result.markdown = markdownForChunking;
+        }
       }
 
       if (formats.includes('chunks') && markdownForChunking) {
         const chunker = new SemanticChunker();
-        result.chunked_content = chunker.chunkText(markdownForChunking, { url, title: result.title });
+        result.chunked_content = chunker.chunkText(markdownForChunking, {
+          url,
+          title: result.title
+        });
       }
     } else {
+      // Fallback if readability fails
       let fallbackMarkdown = '';
       if (formats.includes('markdown') || formats.includes('chunks')) {
         const markdownFormatter = new MarkdownFormatter();
         fallbackMarkdown = markdownFormatter.format(cleanedRawHtml);
-        if (formats.includes('markdown')) result.markdown = fallbackMarkdown;
+        if (formats.includes('markdown')) {
+          result.markdown = fallbackMarkdown;
+        }
       }
       
       if (formats.includes('chunks') && fallbackMarkdown) {
         const chunker = new SemanticChunker();
-        result.chunked_content = chunker.chunkText(fallbackMarkdown, { url, title: result.title });
+        result.chunked_content = chunker.chunkText(fallbackMarkdown, {
+          url,
+          title: result.title
+        });
       }
     }
 
+    // 4. Screenshots (Only available if Playwright was actually used)
     if (formats.includes('screenshot') && usedPlaywright) {
       const screenshotBuffer = await page.screenshot({ fullPage: true });
       result.screenshot = screenshotBuffer.toString('base64');

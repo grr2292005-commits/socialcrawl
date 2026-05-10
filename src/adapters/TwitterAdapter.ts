@@ -4,7 +4,7 @@ import { Page } from 'playwright';
 import { z } from 'zod';
 import { ExtractionValidationError } from '../errors/ExtractionValidationError';
 
-// 1. Reliability Update: All fields made optional to support various hydration states
+// 2. Schema Resilience: All fields made optional to support various hydration states
 const TweetSchema = z.object({
   author: z.string().optional(),
   text: z.string().optional(),
@@ -33,34 +33,50 @@ export class TwitterAdapter extends DefaultAdapter {
         author: 'a[role="link"] [dir="ltr"]',
         text: 'div[lang]',
         timestamp: 'time'
+      },
+      {
+        name: 'Tertiary (generic article)',
+        container: 'article',
+        author: 'div[dir="ltr"] > span',
+        text: 'div[data-testid="tweetText"]',
+        timestamp: 'a > time'
       }
     ];
 
-    let validTweets: any[] | null = null;
-    let lastError: Error | null = null;
+    let validTweets: z.infer<typeof TwitterExtractionSchema> | null = null;
+    let lastValidationError: Error | null = null;
 
     for (const strategy of selectorStrategies) {
       try {
         await page.waitForSelector(strategy.container, { timeout: 5000 });
         
         const extracted = await page.$$eval(strategy.container, (elements, strat) => {
-          return elements.map(el => ({
-            author: el.querySelector(strat.author)?.textContent?.trim(),
-            text: el.querySelector(strat.text)?.textContent?.trim(),
-            timestamp: el.querySelector(strat.timestamp)?.getAttribute('datetime') || el.querySelector(strat.timestamp)?.textContent?.trim()
-          }));
+          return elements.map(el => {
+            const authorEl = el.querySelector(strat.author);
+            const textEl = el.querySelector(strat.text);
+            const timeEl = el.querySelector(strat.timestamp);
+            
+            return {
+              author: authorEl?.textContent?.trim(),
+              text: textEl?.textContent?.trim(),
+              timestamp: timeEl?.getAttribute('datetime') || timeEl?.textContent?.trim()
+            };
+          });
         }, strategy);
 
         validTweets = TwitterExtractionSchema.parse(extracted);
-        break;
+        console.log(`[TwitterAdapter] Successfully extracted and validated using strategy: ${strategy.name}`);
+        break; 
         
       } catch (e: any) {
-        lastError = e;
+        lastValidationError = e;
       }
     }
 
+    // 3. Fallback Logic: Throw deterministic error if all selectors fail
     if (!validTweets) {
-        throw new ExtractionValidationError(`Failed to extract valid Twitter data. Final Error: ${lastError?.message}`);
+      console.log('[TwitterAdapter] All deterministic selectors failed.');
+      throw new ExtractionValidationError(`Failed to extract valid Twitter data. DOM changed or blocked. Final Error: ${lastValidationError?.message}`);
     }
 
     baseResult.extracted_entities = validTweets;
