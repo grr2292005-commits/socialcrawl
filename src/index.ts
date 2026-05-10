@@ -57,17 +57,17 @@ fastify.get('/jobs/:id', async (request, reply) => {
   };
 });
 
-// WS /stream/:jobId
+// WS /stream/:id
 fastify.register(async function (fastify) {
-  fastify.get('/stream/:jobId', { websocket: true }, (connection /* SocketStream */, req /* FastifyRequest */) => {
-    const { jobId } = req.params as any;
+  fastify.get('/stream/:id', { websocket: true }, (connection /* SocketStream */, req /* FastifyRequest */) => {
+    const { id } = req.params as any;
     
     // Create a dedicated Redis client for this connection to subscribe
     const subscriber = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
       maxRetriesPerRequest: null,
     });
 
-    const channel = `job_events:${jobId}`;
+    const channel = `job_events:${id}`;
 
     subscriber.subscribe(channel, (err) => {
       if (err) {

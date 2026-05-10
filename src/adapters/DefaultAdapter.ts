@@ -22,6 +22,7 @@ export class DefaultAdapter extends BaseAdapter {
     const fetchResult = await StealthFetcher.fetch(url, options.proxySessionId);
 
     const isChallenge = fetchResult.statusCode === 403 || 
+                        fetchResult.statusCode === 429 || 
                         fetchResult.statusCode === 503 || 
                         fetchResult.html.includes('cf-browser-verification') || 
                         fetchResult.html.includes('captcha') ||

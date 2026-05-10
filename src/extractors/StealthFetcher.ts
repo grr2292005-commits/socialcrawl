@@ -1,5 +1,3 @@
-import { gotScraping } from 'got-scraping';
-
 export interface StealthFetchResult {
   html: string;
   statusCode: number;
@@ -16,6 +14,10 @@ export class StealthFetcher {
    */
   public static async fetch(url: string, proxyUrl?: string): Promise<StealthFetchResult> {
     try {
+      // Dynamically import got-scraping since it is an ESM-only package
+      // and this project is configured as CommonJS.
+      const { gotScraping } = await import('got-scraping');
+
       const response = await gotScraping({
         url,
         proxyUrl: proxyUrl,

@@ -4,6 +4,10 @@ import { chromium } from 'playwright-extra';
 // @ts-ignore
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { AdapterFactory } from '../adapters/AdapterFactory';
+import { SessionInjector } from '../core/SessionInjector';
+import { PlatformDetector } from '../adapters/PlatformDetector';
+import { ExtractionValidationError } from '../errors/ExtractionValidationError';
+import { v4 as uuidv4 } from 'uuid';
 
 chromium.use(stealthPlugin());
 
@@ -15,7 +19,8 @@ const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
 const runScraper = async (job: Job) => {
   const { platform, url, options = {} } = job.data;
   
-  job.log(`Starting scrape for ${platform || 'auto'} at ${url}`);
+  const detectedPlatform = (platform && platform !== 'auto' && platform !== 'default') ? platform : PlatformDetector.detect(url);
+  job.log(`Starting scrape for ${detectedPlatform} at ${url}`);
   
   // 1. Launch Browser
   const browser = await chromium.launch({
@@ -29,7 +34,22 @@ const runScraper = async (job: Job) => {
   const page = await context.newPage();
   
   try {
-    // 2. Execute Navigation
+    // 2. Inject Warm Session
+    if (detectedPlatform && detectedPlatform !== 'default') {
+      try {
+        const origin = new URL(url).origin;
+        // LocalStorage requires the page to be on the target origin first
+        await page.goto(origin, { waitUntil: 'commit', timeout: 15000 });
+        const injected = await SessionInjector.injectSession(detectedPlatform, context, page);
+        if (injected) {
+          job.log(`Successfully injected warm session for ${detectedPlatform}`);
+        }
+      } catch (sessionError) {
+        job.log(`Session injection skipped or failed: ${sessionError}`);
+      }
+    }
+
+    // 3. Execute Navigation
     await job.updateProgress(10);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     
@@ -56,6 +76,10 @@ const runScraper = async (job: Job) => {
     return result;
     
   } catch (err: any) {
+    if (err.name === 'ExtractionValidationError') {
+      job.log(`[Validation Error] ${err.message}. Triggering BullMQ retry with new proxy.`);
+      throw err;
+    }
     job.log(`Extraction failed: ${err.message}`);
     throw err;
   } finally {
@@ -81,9 +105,29 @@ worker.on('progress', (job, progress) => {
   }
 });
 
-worker.on('completed', (job, result) => {
+worker.on('completed', async (job, result) => {
   console.log(`Job ${job.id} has completed!`);
   publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'completed', data: result }));
+
+  const webhookUrl = job.data?.options?.webhook_url;
+  if (webhookUrl) {
+    try {
+      console.log(`Delivering webhook for job ${job.id} to ${webhookUrl}...`);
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: job.id,
+          status: 'completed',
+          data: result
+        })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      console.log(`Webhook delivered successfully for job ${job.id}`);
+    } catch (e: any) {
+      console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
+    }
+  }
 });
 
 worker.on('failed', (job, err) => {
