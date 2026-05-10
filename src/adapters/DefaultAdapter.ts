@@ -6,6 +6,8 @@ import { MarkdownFormatter } from '../formatters/MarkdownFormatter';
 import { SemanticChunker } from '../chunkers/SemanticChunker';
 import { DOMCleaner } from '../extractors/DOMCleaner';
 import { StealthFetcher } from '../extractors/StealthFetcher';
+import * as cheerio from 'cheerio';
+import { AuthWallError } from '../errors/AuthWallError';
 
 export class DefaultAdapter extends BaseAdapter {
   protected platform = 'default';
@@ -18,21 +20,49 @@ export class DefaultAdapter extends BaseAdapter {
     let usedPlaywright = false;
 
     // 0. Attempt Stealth Fetch First
-    console.log(`[Adapter] Attempting stealth fetch for ${url}`);
-    const fetchResult = await StealthFetcher.fetch(url, options.proxySessionId);
+    if (!options.forcePlaywright) {
+      console.log(`[Adapter] Attempting stealth fetch for ${url}`);
+      const fetchResult = await StealthFetcher.fetch(url, options.proxySessionId);
 
-    const isChallenge = fetchResult.statusCode === 403 || 
-                        fetchResult.statusCode === 429 || 
-                        fetchResult.statusCode === 503 || 
-                        fetchResult.html.includes('cf-browser-verification') || 
-                        fetchResult.html.includes('captcha') ||
-                        fetchResult.html.includes('datadome');
+      const isChallenge = fetchResult.statusCode === 403 || 
+                          fetchResult.statusCode === 429 || 
+                          fetchResult.statusCode === 503 || 
+                          fetchResult.html.includes('cf-browser-verification') || 
+                          fetchResult.html.includes('captcha') ||
+                          fetchResult.html.includes('datadome');
 
-    if (fetchResult.statusCode === 200 && !isChallenge && fetchResult.html.length > 500) {
-      console.log(`[Adapter] Stealth fetch succeeded for ${url}. Skipping Playwright.`);
-      rawHtml = fetchResult.html;
-    } else {
-      console.log(`[Adapter] Stealth fetch failed or challenged (Status: ${fetchResult.statusCode}). Falling back to Playwright.`);
+      // Deterministic Content Density Check
+      let isSparseSPA = false;
+      if (fetchResult.statusCode === 200 && !isChallenge) {
+        const $ = cheerio.load(fetchResult.html);
+        
+        // Strip out non-content tags
+        $('script, style, svg').remove();
+        
+        // Calculate raw text length
+        const textContentLength = $('body').text().replace(/\s+/g, ' ').trim().length;
+        
+        // Check for known SPA mount points
+        const hasSPAMounts = fetchResult.html.includes('id="root"') || 
+                             fetchResult.html.includes('id="__next"') || 
+                             fetchResult.html.includes('id="app"') || 
+                             fetchResult.html.includes('<yt-root>') ||
+                             fetchResult.html.includes('<app-root>');
+
+        if (textContentLength < 500 || hasSPAMounts) {
+          console.log(`[Adapter] Stealth fetch returned sparse SPA shell (Text length: ${textContentLength}, SPA mounts: ${hasSPAMounts}).`);
+          isSparseSPA = true;
+        }
+      }
+
+      if (fetchResult.statusCode === 200 && !isChallenge && !isSparseSPA) {
+        console.log(`[Adapter] Stealth fetch succeeded for ${url} with sufficient content density. Skipping Playwright.`);
+        rawHtml = fetchResult.html;
+      }
+    }
+
+    if (!rawHtml) {
+      console.log(`[Adapter] Stealth fetch skipped or failed. Falling back to Playwright.`);
       usedPlaywright = true;
       
       // Execute Playwright navigation if not already on the target URL
@@ -40,8 +70,23 @@ export class DefaultAdapter extends BaseAdapter {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
         try { await page.waitForLoadState('networkidle', { timeout: 10000 }); } catch(e) {}
       }
+
+      // --- Post-Injection Session Validation ---
+      const currentUrl = page.url();
+      const content = await page.content();
       
-      rawHtml = await page.content();
+      const isAuthWall = currentUrl.includes('/login') || 
+                         currentUrl.includes('/authwall') || 
+                         currentUrl.includes('/signup') ||
+                         content.includes('input[type="password"]') ||
+                         content.includes('sign in') && content.includes('password');
+
+      if (isAuthWall) {
+        console.log(`[Adapter] Auth Wall detected at ${currentUrl}. Flagging session as invalid.`);
+        throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
+      }
+      
+      rawHtml = content;
     }
     
     // 1. Metadata Extraction

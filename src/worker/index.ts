@@ -7,13 +7,22 @@ import { AdapterFactory } from '../adapters/AdapterFactory';
 import { SessionInjector } from '../core/SessionInjector';
 import { PlatformDetector } from '../adapters/PlatformDetector';
 import { ExtractionValidationError } from '../errors/ExtractionValidationError';
+import { AuthWallError } from '../errors/AuthWallError';
 import { v4 as uuidv4 } from 'uuid';
+import { Pool } from 'pg';
+import { Queue } from 'bullmq';
 
 chromium.use(stealthPlugin());
 
 const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
   maxRetriesPerRequest: null,
 });
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgres://postgres:password@postgres:5432/socialcrawl',
+});
+
+const warmingQueue = new Queue('session-warming', { connection: redis });
 
 // This simulates the plugin system
 const runScraper = async (job: Job) => {
@@ -22,6 +31,13 @@ const runScraper = async (job: Job) => {
   const detectedPlatform = (platform && platform !== 'auto' && platform !== 'default') ? platform : PlatformDetector.detect(url);
   job.log(`Starting scrape for ${detectedPlatform} at ${url}`);
   
+  if (job.attemptsMade > 0) {
+    const newProxy = `proxy-rotated-${uuidv4()}`;
+    job.log(`Retry attempt ${job.attemptsMade}/3. Requesting new proxy IP (${newProxy}) from Proxy Manager to rule out location-based UI variations.`);
+    options.proxySessionId = newProxy;
+    await job.updateData({ ...job.data, options });
+  }
+
   // 1. Launch Browser
   const browser = await chromium.launch({
     headless: true, // or false for stealth
@@ -51,17 +67,9 @@ const runScraper = async (job: Job) => {
 
     // 3. Execute Navigation
     await job.updateProgress(10);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Note: DefaultAdapter now handles navigation and AuthWall validation internally
     
-    // Additional wait for network idle to ensure dynamic content loads
-    try {
-      await page.waitForLoadState('networkidle', { timeout: 10000 });
-    } catch(e) {
-      console.log('networkidle timeout, proceeding anyway.');
-    }
-    await job.updateProgress(50);
-    
-    // 3. Transformation & Extraction using Adapter
+    // 4. Transformation & Extraction using Adapter
     const adapter = AdapterFactory.getAdapter(url, platform);
     
     // Provide default formats if not specified
@@ -76,6 +84,28 @@ const runScraper = async (job: Job) => {
     return result;
     
   } catch (err: any) {
+    if (err.name === 'AuthWallError') {
+      job.log(`[Auth Wall] ${err.message}. Invalidating session and requesting re-warming.`);
+      
+      // Invalidate session in DB
+      await pool.query('UPDATE platform_sessions SET is_valid = false WHERE platform = $1', [detectedPlatform]);
+      
+      // Trigger new warming job
+      await warmingQueue.add('warm-session', { 
+        platform: detectedPlatform, 
+        url: new URL(url).origin 
+      });
+      
+      // Move current job to delayed to wait for re-warming (e.g. 30 seconds)
+      await job.moveToDelayed(Date.now() + 30000, job.token);
+      throw err;
+    }
+    if (err.name === 'BotChallengeError') {
+      job.log(`[Bot Challenge] ${err.message}. Forcing Playwright fallback for the next retry.`);
+      options.forcePlaywright = true;
+      await job.updateData({ ...job.data, options });
+      throw err;
+    }
     if (err.name === 'ExtractionValidationError') {
       job.log(`[Validation Error] ${err.message}. Triggering BullMQ retry with new proxy.`);
       throw err;

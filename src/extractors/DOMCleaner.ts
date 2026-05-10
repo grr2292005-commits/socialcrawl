@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { BotChallengeError } from '../errors/BotChallengeError';
 
 export class DOMCleaner {
   // Common selectors for noise elements that offer no value to LLMs
@@ -24,6 +25,16 @@ export class DOMCleaner {
 
   public static cleanContent(html: string): string {
     const $ = cheerio.load(html);
+
+    const fullText = $('body').text() || '';
+    if (
+      fullText.includes('security service to protect against malicious bots') ||
+      fullText.includes('Checking if the site connection is secure') ||
+      fullText.includes('Cloudflare') ||
+      fullText.includes('Please wait while your request is being verified')
+    ) {
+      throw new BotChallengeError('Bot challenge detected in content (Cloudflare/WAF).');
+    }
 
     // 1. Remove noise based on basic selector matching
     this.NOISE_SELECTORS.forEach(selector => {
