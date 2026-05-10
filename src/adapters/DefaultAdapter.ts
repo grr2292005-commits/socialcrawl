@@ -35,7 +35,8 @@ export class DefaultAdapter extends BaseAdapter {
                           fetchResult.html.includes('Access Denied') ||
                           fetchResult.html.includes('Just a moment...') ||
                           fetchResult.html.includes('Checking your browser') ||
-                          fetchResult.html.includes('Sorry.');
+                          fetchResult.html.includes('Access to this page has been denied') ||
+                          (url.includes('ycombinator') && fetchResult.html.includes('Sorry.'));
 
       if (isChallenge) {
         console.log(`[Adapter] Bot Challenge detected in stealth fetch. Escalating to Playwright.`);
@@ -68,7 +69,11 @@ export class DefaultAdapter extends BaseAdapter {
       usedPlaywright = true;
       
       if (page.url() === 'about:blank' || page.url() !== url) {
+        // Fix Navigation Error: Wrap goto and content logic
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        
+        // Navigation Stability: Wait for networkidle only after domcontentloaded
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
         
         // Optimize Reddit/Instagram: Only wait 5s if DOM is sparse
         const content = await page.content();
@@ -107,7 +112,8 @@ export class DefaultAdapter extends BaseAdapter {
                           content.includes('Access Denied') ||
                           content.includes('Just a moment...') ||
                           content.includes('Checking your browser') ||
-                          content.includes('Sorry.');
+                          content.includes('Access to this page has been denied') ||
+                          (url.includes('ycombinator') && content.includes('Sorry.'));
 
       if (isChallenge) {
         console.log(`[Adapter] Bot Challenge detected in Playwright. Throwing immediately.`);
@@ -120,7 +126,7 @@ export class DefaultAdapter extends BaseAdapter {
       } catch (error: any) {
         if (error.message.includes('navigation') || error.message.includes('closed')) {
           console.log('[Adapter] Navigation/Context error during content fetch. Retrying once...');
-          await page.waitForTimeout(2000);
+          await page.waitForTimeout(3000); // Wait 3s as requested
           rawHtml = await page.content();
         } else {
           throw error;

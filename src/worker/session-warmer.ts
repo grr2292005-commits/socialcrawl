@@ -25,10 +25,24 @@ const warmSession = async (job: Job) => {
   job.log(`Warming session for ${platform} at ${url}`);
 
   const browser = await chromium.launch({ headless: true });
+  
+  // Hardware Masking for Warmer
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    viewport: { 
+      width: Math.floor(Math.random() * (1920 - 1280) + 1280), 
+      height: Math.floor(Math.random() * (1080 - 720) + 720) 
+    },
+    locale: ['en-US', 'en-GB'][Math.floor(Math.random() * 2)],
+    deviceScaleFactor: 1,
+    hardwareConcurrency: Math.floor(Math.random() * (8 - 4) + 4)
   });
   
+  // Extra Stealth: Mask webdriver
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
   const page = await context.newPage();
 
   try {

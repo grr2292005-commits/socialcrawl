@@ -70,25 +70,25 @@ const runScraper = async (job: Job) => {
     await job.updateData({ ...job.data, options });
   }
 
-  // Tiered Context Configuration
+  // Tiered Context Configuration with Hardware Masking
   const contextOptions: any = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 720 },
-    locale: 'en-US'
+    viewport: { 
+      width: Math.floor(Math.random() * (1920 - 1280) + 1280), 
+      height: Math.floor(Math.random() * (1080 - 720) + 720) 
+    },
+    locale: ['en-US', 'en-GB'][Math.floor(Math.random() * 2)],
+    deviceScaleFactor: 1,
+    hardwareConcurrency: Math.floor(Math.random() * (8 - 4) + 4)
   };
 
-  // Tier 2: Ultra-Stealth fingerprint evasion
-  if (stealthLevel >= 2) {
-    contextOptions.viewport = { 
-      width: Math.floor(Math.random() * (1920 - 1024) + 1024), 
-      height: Math.floor(Math.random() * (1080 - 768) + 768) 
-    };
-    const locales = ['en-US', 'en-GB', 'de-DE', 'fr-FR'];
-    contextOptions.locale = locales[Math.floor(Math.random() * locales.length)];
-    job.log(`[Ultra-Stealth] Randomized viewport: ${contextOptions.viewport.width}x${contextOptions.viewport.height}, Locale: ${contextOptions.locale}`);
-  }
-
   const context = await browser.newContext(contextOptions);
+  
+  // Extra Stealth: Mask webdriver
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
   const page = await context.newPage();
   
   try {
