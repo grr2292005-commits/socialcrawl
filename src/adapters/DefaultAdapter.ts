@@ -33,14 +33,15 @@ export class DefaultAdapter extends BaseAdapter {
                           fetchResult.html.includes('datadome') ||
                           fetchResult.html.includes('Verify you are human') ||
                           fetchResult.html.includes('Access Denied') ||
+                          fetchResult.html.includes('Access to this page has been denied') ||
+                          fetchResult.html.includes('Checking if the site connection is secure') ||
                           fetchResult.html.includes('Just a moment...') ||
                           fetchResult.html.includes('Checking your browser') ||
-                          fetchResult.html.includes('Access to this page has been denied') ||
                           (url.includes('ycombinator') && fetchResult.html.includes('Sorry.'));
 
       if (isChallenge) {
-        console.log(`[Adapter] Bot Challenge detected in stealth fetch. Escalating to Playwright.`);
-        throw new BotChallengeError(`Bot Challenge detected at ${url} (Status: ${fetchResult.statusCode})`);
+        console.log(`[Adapter] Bot Challenge detected in stealth fetch.`);
+        throw new BotChallengeError(`Bot Challenge detected at ${url}`);
       }
 
       let isSparseSPA = false;
@@ -54,38 +55,51 @@ export class DefaultAdapter extends BaseAdapter {
                            fetchResult.html.includes('<app-root>');
 
       if (fetchResult.statusCode === 200 && (textContentLength < 500 || hasSPAMounts)) {
-        console.log(`[Adapter] Stealth fetch returned sparse SPA shell.`);
         isSparseSPA = true;
       }
 
       if (fetchResult.statusCode === 200 && !isSparseSPA) {
-        console.log(`[Adapter] Stealth fetch succeeded for ${url}. Skipping Playwright.`);
         rawHtml = fetchResult.html;
       }
     }
 
     if (!rawHtml) {
-      console.log(`[Adapter] Stealth fetch skipped or failed. Falling back to Playwright.`);
       usedPlaywright = true;
       
       if (page.url() === 'about:blank' || page.url() !== url) {
-        // Fix Navigation Error: Wrap goto and content logic
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        // Navigation Stability: Wait for networkidle only after domcontentloaded
-        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-        
-        // Optimize Reddit/Instagram: Only wait 5s if DOM is sparse
-        const content = await page.content();
-        const isSparse = content.length < 5000 || content.includes('id="root"') || content.includes('id="__next"');
-        if (isSparse) {
-          console.log(`[Adapter] Sparse DOM detected for ${url}. Waiting 5s for hydration...`);
-          await page.waitForTimeout(5000);
+        // 2. Dynamic Waiting for Reddit or YouTube
+        if (url.includes('reddit.com') || url.includes('youtube.com')) {
+          console.log(`[Adapter] Dynamic waiting for ${url}...`);
+          await Promise.race([
+            page.waitForSelector('main', { timeout: 8000 }),
+            page.waitForSelector('#content', { timeout: 8000 }),
+            page.waitForTimeout(5000)
+          ]).catch(() => {});
+        } else {
+          const content = await page.content();
+          const isSparse = content.length < 5000 || content.includes('id="root"') || content.includes('id="__next"');
+          if (isSparse) {
+            await page.waitForTimeout(5000);
+          }
         }
       }
 
       const currentUrl = page.url();
-      const content = await page.content();
+      
+      // 1. Logic Fix: Wrap page.content in try/catch with retry
+      try {
+        rawHtml = await page.content();
+      } catch (error: any) {
+        if (error.message.includes('navigation') || error.message.includes('closed')) {
+          console.log('[Adapter] Navigation error during content fetch. Retrying in 3s...');
+          await page.waitForTimeout(3000);
+          rawHtml = await page.content();
+        } else {
+          throw error;
+        }
+      }
       
       // Robust Auth Wall Detection
       const isAuthWall = currentUrl.includes('/login') || 
@@ -94,43 +108,30 @@ export class DefaultAdapter extends BaseAdapter {
                          currentUrl.includes('instagram.com/accounts/login') ||
                          currentUrl.includes('reddit.com/login') ||
                          currentUrl.includes('youtube.com/signin') ||
-                         content.includes('input[type="password"]') ||
-                         content.includes('Sign up to see photos') ||
-                         content.includes('Please log in') ||
-                         content.includes('Verify your identity') ||
-                         (content.includes('sign in') && content.includes('password'));
+                         rawHtml.includes('input[type="password"]') ||
+                         rawHtml.includes('Sign up to see photos') ||
+                         rawHtml.includes('Please log in') ||
+                         rawHtml.includes('Verify your identity') ||
+                         (rawHtml.includes('sign in') && rawHtml.includes('password'));
 
       if (isAuthWall) {
-        console.log(`[Adapter] Auth Wall detected at ${currentUrl}. Flagging session as invalid.`);
         throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
       }
       
-      const isChallenge = content.includes('cf-browser-verification') || 
-                          content.includes('captcha') ||
-                          content.includes('datadome') ||
-                          content.includes('Verify you are human') ||
-                          content.includes('Access Denied') ||
-                          content.includes('Just a moment...') ||
-                          content.includes('Checking your browser') ||
-                          content.includes('Access to this page has been denied') ||
-                          (url.includes('ycombinator') && content.includes('Sorry.'));
+      // 3. Intelligent Block Detection
+      const isChallenge = rawHtml.includes('cf-browser-verification') || 
+                          rawHtml.includes('captcha') ||
+                          rawHtml.includes('datadome') ||
+                          rawHtml.includes('Verify you are human') ||
+                          rawHtml.includes('Access Denied') ||
+                          rawHtml.includes('Access to this page has been denied') ||
+                          rawHtml.includes('Checking if the site connection is secure') ||
+                          rawHtml.includes('Just a moment...') ||
+                          rawHtml.includes('Checking your browser') ||
+                          (url.includes('ycombinator') && rawHtml.includes('Sorry.'));
 
       if (isChallenge) {
-        console.log(`[Adapter] Bot Challenge detected in Playwright. Throwing immediately.`);
         throw new BotChallengeError(`Bot Challenge detected in Playwright at ${currentUrl}`);
-      }
-
-      // 2. Accurate Content Fetching: Wrap in try/catch with retry
-      try {
-        rawHtml = await page.content();
-      } catch (error: any) {
-        if (error.message.includes('navigation') || error.message.includes('closed')) {
-          console.log('[Adapter] Navigation/Context error during content fetch. Retrying once...');
-          await page.waitForTimeout(3000); // Wait 3s as requested
-          rawHtml = await page.content();
-        } else {
-          throw error;
-        }
       }
     }
     
@@ -150,42 +151,18 @@ export class DefaultAdapter extends BaseAdapter {
     const cleanedArticle = ReadabilityExtractor.extract(cleanedRawHtml, url);
     
     if (cleanedArticle) {
-      if (formats.includes('cleaned_html')) {
-        result.cleaned_html = cleanedArticle.content;
-      }
-      if (formats.includes('text')) {
-        result.text = cleanedArticle.textContent;
-      }
+      if (formats.includes('cleaned_html')) result.cleaned_html = cleanedArticle.content;
+      if (formats.includes('text')) result.text = cleanedArticle.textContent;
+
       let markdownForChunking = '';
       if (formats.includes('markdown') || formats.includes('chunks')) {
         const markdownFormatter = new MarkdownFormatter();
         markdownForChunking = markdownFormatter.format(cleanedArticle.content);
-        if (formats.includes('markdown')) {
-          result.markdown = markdownForChunking;
-        }
+        if (formats.includes('markdown')) result.markdown = markdownForChunking;
       }
       if (formats.includes('chunks') && markdownForChunking) {
         const chunker = new SemanticChunker();
-        result.chunked_content = chunker.chunkText(markdownForChunking, {
-          url,
-          title: result.title
-        });
-      }
-    } else {
-      let fallbackMarkdown = '';
-      if (formats.includes('markdown') || formats.includes('chunks')) {
-        const markdownFormatter = new MarkdownFormatter();
-        fallbackMarkdown = markdownFormatter.format(cleanedRawHtml);
-        if (formats.includes('markdown')) {
-          result.markdown = fallbackMarkdown;
-        }
-      }
-      if (formats.includes('chunks') && fallbackMarkdown) {
-        const chunker = new SemanticChunker();
-        result.chunked_content = chunker.chunkText(fallbackMarkdown, {
-          url,
-          title: result.title
-        });
+        result.chunked_content = chunker.chunkText(markdownForChunking, { url, title: result.title });
       }
     }
 

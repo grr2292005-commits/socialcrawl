@@ -24,7 +24,7 @@ const pool = new Pool({
 const warmingQueue = new Queue('session-warming', { connection: redis });
 
 /**
- * 1. Automatic Schema Initialization: Ensure the platform_sessions table exists.
+ * 1. Automatic Schema Initialization
  */
 export const ensureDatabaseSchema = async (pool: Pool) => {
   const query = `
@@ -56,43 +56,74 @@ const initBrowser = async () => {
   });
 };
 
+/**
+ * 2. CDP Stealth Overrides
+ */
+export const applyAdvancedStealth = async (page: any) => {
+  await page.addInitScript(() => {
+    // Mask webdriver
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // Override WebGL Renderer
+    const getParameter = HTMLCanvasElement.prototype.getContext('2d')?.canvas.getContext('webgl')?.getParameter;
+    if (getParameter) {
+      // @ts-ignore
+      WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        // UNMASKED_VENDOR_WEBGL
+        if (parameter === 37445) return 'Intel Inc.';
+        // UNMASKED_RENDERER_WEBGL
+        if (parameter === 37446) return 'Intel(R) Iris(TM) Plus Graphics 640';
+        return getParameter.apply(this, [parameter]);
+      };
+    }
+
+    // Fake Plugins
+    // @ts-ignore
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5],
+    });
+  });
+};
+
 const runScraper = async (job: Job) => {
   const { platform, url, options = {} } = job.data;
-  const stealthLevel = options.stealthLevel || 0; // 0 = Fast, 1 = Browser, 2 = Ultra-Stealth
+  const stealthLevel = options.stealthLevel || 0;
   
   const detectedPlatform = (platform && platform !== 'auto' && platform !== 'default') ? platform : PlatformDetector.detect(url);
   job.log(`[Tier ${stealthLevel}] Starting scrape for ${detectedPlatform} at ${url}`);
   
   if (job.attemptsMade > 0) {
     const newProxy = `proxy-rotated-${uuidv4()}`;
-    job.log(`Retry attempt ${job.attemptsMade}/3. Requesting new proxy IP (${newProxy}) and escalating stealth.`);
+    job.log(`Retry attempt ${job.attemptsMade}/3. Requesting new proxy IP.`);
     options.proxySessionId = newProxy;
     await job.updateData({ ...job.data, options });
   }
 
-  // Tiered Context Configuration with Hardware Masking
+  // 1. Fingerprint Generator
+  const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+  ];
+
   const contextOptions: any = {
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
     viewport: { 
-      width: Math.floor(Math.random() * (1920 - 1280) + 1280), 
-      height: Math.floor(Math.random() * (1080 - 720) + 720) 
+      width: Math.floor(Math.random() * (1920 - 1366) + 1366), 
+      height: Math.floor(Math.random() * (1080 - 768) + 768) 
     },
-    locale: ['en-US', 'en-GB'][Math.floor(Math.random() * 2)],
-    deviceScaleFactor: 1,
-    hardwareConcurrency: Math.floor(Math.random() * (8 - 4) + 4)
+    deviceScaleFactor: Math.random() > 0.5 ? 1 : 2,
+    locale: 'en-US',
+    hardwareConcurrency: Math.floor(Math.random() * 4) + 4
   };
 
   const context = await browser.newContext(contextOptions);
-  
-  // Extra Stealth: Mask webdriver
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  });
-
   const page = await context.newPage();
   
+  // 3. Apply CDP Stealth
+  await applyAdvancedStealth(page);
+  
   try {
-    // 2. Inject Warm Session
     if (detectedPlatform && detectedPlatform !== 'default') {
       try {
         const origin = new URL(url).origin;
@@ -102,14 +133,14 @@ const runScraper = async (job: Job) => {
           job.log(`Successfully injected warm session for ${detectedPlatform}`);
         }
       } catch (sessionError) {
-        job.log(`Session injection skipped or failed: ${sessionError}`);
+        job.log(`Session injection skipped: ${sessionError}`);
       }
     }
 
     await job.updateProgress(10);
     
-    // Fix Navigation Error: Ensure we wait for the page to stabilize
-    await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+    // 4. Navigation Guard
+    await page.waitForLoadState('load', { timeout: 10000 }).catch(() => {});
 
     const adapter = AdapterFactory.getAdapter(url, platform);
     const extractionOptions = {
@@ -124,30 +155,22 @@ const runScraper = async (job: Job) => {
     
   } catch (err: any) {
     if (err.name === 'AuthWallError') {
-      job.log(`[Auth Wall] ${err.message}. Invalidating session and requesting re-warming.`);
-      
+      job.log(`[Auth Wall] ${err.message}. Requesting re-warming.`);
       await pool.query('UPDATE platform_sessions SET is_valid = false WHERE platform = $1', [detectedPlatform]);
-      
       const priority = detectedPlatform === 'linkedin' ? 1 : 10;
       await warmingQueue.add('warm-session', { 
         platform: detectedPlatform, 
         url: new URL(url).origin 
       }, { priority });
-      
       throw err;
     }
     if (err.name === 'BotChallengeError') {
-      job.log(`[Bot Challenge] ${err.message}. Escalating stealth tier for the next retry.`);
+      job.log(`[Bot Challenge] Escalating stealth tier.`);
       options.stealthLevel = stealthLevel + 1;
       options.forcePlaywright = true;
       await job.updateData({ ...job.data, options });
       throw err;
     }
-    if (err.name === 'ExtractionValidationError') {
-      job.log(`[Validation Error] ${err.message}. Triggering BullMQ retry with new proxy.`);
-      throw err;
-    }
-    job.log(`Extraction failed: ${err.message}`);
     throw err;
   } finally {
     await context.close();
@@ -155,10 +178,7 @@ const runScraper = async (job: Job) => {
 };
 
 const startWorker = async () => {
-  // 1. Initialize schema
   await ensureDatabaseSchema(pool);
-  
-  // 2. Initialize browser
   await initBrowser();
 
   const worker = new Worker('scrape-jobs', async (job) => {
@@ -181,24 +201,6 @@ const startWorker = async () => {
   worker.on('completed', async (job, result) => {
     console.log(`Job ${job.id} has completed!`);
     publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'completed', data: result }));
-
-    const webhookUrl = job.data?.options?.webhook_url;
-    if (webhookUrl) {
-      try {
-        const response = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jobId: job.id,
-            status: 'completed',
-            data: result
-          })
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      } catch (e: any) {
-        console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
-      }
-    }
   });
 
   worker.on('failed', (job, err) => {
@@ -208,7 +210,7 @@ const startWorker = async () => {
     }
   });
 
-  console.log('Worker is running and listening to scrape-jobs...');
+  console.log('Worker is running...');
 };
 
 startWorker().catch(err => {

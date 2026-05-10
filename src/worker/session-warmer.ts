@@ -5,7 +5,7 @@ import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
-import { ensureDatabaseSchema } from './index';
+import { ensureDatabaseSchema, applyAdvancedStealth } from './index';
 
 chromium.use(stealthPlugin());
 
@@ -26,56 +26,51 @@ const warmSession = async (job: Job) => {
 
   const browser = await chromium.launch({ headless: true });
   
-  // Hardware Masking for Warmer
-  const context = await browser.newContext({
+  // Fingerprint Generation
+  const contextOptions: any = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     viewport: { 
-      width: Math.floor(Math.random() * (1920 - 1280) + 1280), 
-      height: Math.floor(Math.random() * (1080 - 720) + 720) 
+      width: Math.floor(Math.random() * (1920 - 1366) + 1366), 
+      height: Math.floor(Math.random() * (1080 - 768) + 768) 
     },
-    locale: ['en-US', 'en-GB'][Math.floor(Math.random() * 2)],
-    deviceScaleFactor: 1,
-    hardwareConcurrency: Math.floor(Math.random() * (8 - 4) + 4)
-  });
-  
-  // Extra Stealth: Mask webdriver
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  });
+    deviceScaleFactor: Math.random() > 0.5 ? 1 : 2,
+    locale: 'en-US'
+  };
 
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
 
+  // 3. Schema Guard: Use the same advanced stealth
+  await applyAdvancedStealth(page);
+
   try {
+    // 1. Identity Simulation: Navigate to Google first
+    job.log('Navigating to Google to establish referrer...');
+    await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await delay(2000);
+
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await job.updateProgress(30);
 
-    // Randomized Human-Like Behavior
+    // 2. Behavioral Jitter
     for (let i = 0; i < 5; i++) {
-      await randomDelay(500, 1500);
+      await randomDelay(100, 800);
       
-      // Randomized Mouse Movements
       const x = Math.floor(Math.random() * 800);
       const y = Math.floor(Math.random() * 600);
       await page.mouse.move(x, y, { steps: 10 });
 
-      // "Human Jitter" scrolling
-      const jitterScroll = Math.floor(Math.random() * 300) - 50; 
+      const jitterScroll = Math.floor(Math.random() * 400) - 100; 
       await page.mouse.wheel(0, jitterScroll);
-      job.log(`Human Jitter: moved mouse to (${x},${y}), scrolled ${jitterScroll}px`);
+      job.log(`Behavioral Jitter: moved mouse to (${x},${y}), scrolled ${jitterScroll}px`);
     }
 
     await job.updateProgress(70);
 
-    // --- Post-Login / Post-Navigation Challenge Check ---
     const content = await page.content();
     if (content.includes('Security Check') || content.includes('Verify') || content.includes('Verify you are human')) {
-      job.log(`[Block Detected] Session warmer hit a challenge for ${platform}. Rotating proxy and marking as blocked.`);
-      
-      // Mark session as blocked in DB
+      job.log(`[Block Detected] Session warmer hit a challenge for ${platform}.`);
       await pool.query('UPDATE platform_sessions SET is_valid = false, is_blocked = true WHERE platform = $1', [platform]);
-      
-      // Simulated Proxy Rotation Log
-      job.log(`[Proxy Rotation] Requesting new IP for ${platform} warmer node.`);
       throw new Error(`Session warmer blocked by challenge on ${platform}`);
     }
 
@@ -111,7 +106,7 @@ const warmSession = async (job: Job) => {
       true
     ]);
 
-    job.log(`Session ${sessionId} successfully warmed and saved.`);
+    job.log(`Session ${sessionId} successfully warmed.`);
     await job.updateProgress(100);
     return { sessionId, platform };
 
@@ -125,7 +120,6 @@ const warmSession = async (job: Job) => {
 };
 
 const startWarmer = async () => {
-  // Ensure schema exists
   await ensureDatabaseSchema(pool);
 
   const worker = new Worker('session-warming', async (job) => {
@@ -135,15 +129,7 @@ const startWarmer = async () => {
     concurrency: 2,
   });
 
-  worker.on('completed', (job) => {
-    console.log(`Session warming job ${job.id} completed!`);
-  });
-
-  worker.on('failed', (job, err) => {
-    console.error(`Session warming job ${job?.id} failed with ${err.message}`);
-  });
-
-  console.log('Session Warmer is running and listening to session-warming queue...');
+  console.log('Session Warmer is running...');
 };
 
 startWarmer().catch(err => {
