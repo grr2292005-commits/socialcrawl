@@ -1,7 +1,6 @@
 import { DefaultAdapter } from './DefaultAdapter';
 import { ExtractionResult } from './BaseAdapter';
 import { Page } from 'playwright';
-import { AISelectorHealer } from '../extractors/AISelectorHealer';
 import { z } from 'zod';
 import { ExtractionValidationError } from '../errors/ExtractionValidationError';
 
@@ -86,31 +85,8 @@ export class TwitterAdapter extends DefaultAdapter {
 
     // 4. Handle Exhausted Fallbacks
     if (!validTweets) {
-      console.log('[TwitterAdapter] All deterministic selectors failed. Triggering AI Self-Healing...');
-      try {
-        const healedSelector = await AISelectorHealer.healSelector(
-          page,
-          this.platform,
-          'tweet_body',
-          'article[data-testid="tweet"]'
-        );
-        
-        await page.waitForSelector(healedSelector, { timeout: 5000 });
-        
-        const aiExtracted = await page.$$eval(healedSelector, (elements) => {
-          return elements.map(el => ({
-            author: el.textContent?.substring(0, 20) || 'Unknown Author', // Mapping for arbitrary healed selector
-            text: el.textContent || '',
-            timestamp: new Date().toISOString()
-          }));
-        });
-        
-        validTweets = TwitterExtractionSchema.parse(aiExtracted);
-        console.log('[TwitterAdapter] AI Healing extraction successful.');
-      } catch (aiError: any) {
-        console.log('[TwitterAdapter] AI Healing failed.');
-        throw new ExtractionValidationError(`Failed to extract valid Twitter data. DOM changed or blocked. Final Error: ${aiError.message || lastValidationError?.message}`);
-      }
+      console.log('[TwitterAdapter] All deterministic selectors failed. Throwing Validation Error.');
+      throw new ExtractionValidationError(`Failed to extract valid Twitter data. DOM changed or blocked. Final Error: ${lastValidationError?.message}`);
     }
 
     baseResult.extracted_entities = validTweets;
