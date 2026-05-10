@@ -63,8 +63,8 @@ export class DefaultAdapter extends BaseAdapter {
       if (page.url() === 'about:blank' || page.url() !== url) {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        // 3. Deterministic hydration window instead of waiting for endless background trackers
-        await page.waitForTimeout(2000);
+        // 2. SPA Hydration Fix: Deterministic hydration window for heavy React/SPA apps
+        await page.waitForTimeout(5000);
       }
 
       // --- Post-Injection Session Validation ---
@@ -75,14 +75,18 @@ export class DefaultAdapter extends BaseAdapter {
                          currentUrl.includes('/authwall') || 
                          currentUrl.includes('/signup') ||
                          content.includes('input[type="password"]') ||
-                         content.includes('sign in') && content.includes('password');
+                         (content.includes('sign in') && content.includes('password')) ||
+                         content.includes('Instagram') ||
+                         content.includes('Sign up to see photos') ||
+                         content.includes('Log In');
 
       if (isAuthWall) {
         console.log(`[Adapter] Auth Wall detected at ${currentUrl}. Flagging session as invalid.`);
         throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
       }
       
-      rawHtml = content;
+      // 3. Capture fully rendered DOM after hydration wait
+      rawHtml = await page.content();
     }
     
     // 1. Metadata Extraction

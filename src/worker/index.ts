@@ -33,7 +33,6 @@ const initBrowser = async () => {
   });
 };
 
-// This simulates the plugin system
 const runScraper = async (job: Job) => {
   const { platform, url, options = {} } = job.data;
   

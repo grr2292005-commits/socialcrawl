@@ -11,6 +11,7 @@ const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
   maxRetriesPerRequest: null,
 });
 const scrapeQueue = new Queue('scrape-jobs', { connection: redis });
+const warmingQueue = new Queue('session-warming', { connection: redis });
 
 // GET /health
 fastify.get('/health', async () => {
@@ -35,6 +36,21 @@ fastify.post('/scrape', async (request, reply) => {
     success: true,
     jobId: job.id,
     status_url: `/jobs/${job.id}`
+  });
+});
+
+// POST /warm
+fastify.post('/warm', async (request, reply) => {
+  const { platform, url } = request.body as any;
+  
+  const job = await warmingQueue.add('warm-session', {
+    platform,
+    url
+  });
+
+  return reply.status(202).send({
+    success: true,
+    jobId: job.id
   });
 });
 
