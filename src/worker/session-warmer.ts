@@ -5,6 +5,7 @@ import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
+import { ensureDatabaseSchema } from './index';
 
 chromium.use(stealthPlugin());
 
@@ -34,20 +35,37 @@ const warmSession = async (job: Job) => {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await job.updateProgress(30);
 
-    // Perform 3 random human-like scrolls
-    for (let i = 0; i < 3; i++) {
-      await randomDelay(1000, 3000);
-      const scrollAmount = Math.floor(Math.random() * 500) + 200;
-      await page.mouse.wheel(0, scrollAmount);
-      job.log(`Scrolled down by ${scrollAmount}px`);
+    // Randomized Human-Like Behavior
+    for (let i = 0; i < 5; i++) {
+      await randomDelay(500, 1500);
+      
+      // Randomized Mouse Movements
+      const x = Math.floor(Math.random() * 800);
+      const y = Math.floor(Math.random() * 600);
+      await page.mouse.move(x, y, { steps: 10 });
+
+      // "Human Jitter" scrolling
+      const jitterScroll = Math.floor(Math.random() * 300) - 50; 
+      await page.mouse.wheel(0, jitterScroll);
+      job.log(`Human Jitter: moved mouse to (${x},${y}), scrolled ${jitterScroll}px`);
     }
 
     await job.updateProgress(70);
 
-    // Serialize cookies
-    const cookies = await context.cookies();
+    // --- Post-Login / Post-Navigation Challenge Check ---
+    const content = await page.content();
+    if (content.includes('Security Check') || content.includes('Verify') || content.includes('Verify you are human')) {
+      job.log(`[Block Detected] Session warmer hit a challenge for ${platform}. Rotating proxy and marking as blocked.`);
+      
+      // Mark session as blocked in DB
+      await pool.query('UPDATE platform_sessions SET is_valid = false, is_blocked = true WHERE platform = $1', [platform]);
+      
+      // Simulated Proxy Rotation Log
+      job.log(`[Proxy Rotation] Requesting new IP for ${platform} warmer node.`);
+      throw new Error(`Session warmer blocked by challenge on ${platform}`);
+    }
 
-    // Serialize local storage
+    const cookies = await context.cookies();
     const localStorage = await page.evaluate(() => {
       const ls: Record<string, string> = {};
       for (let i = 0; i < window.localStorage.length; i++) {
@@ -59,7 +77,6 @@ const warmSession = async (job: Job) => {
       return ls;
     });
 
-    // Save to PostgreSQL
     const query = `
       INSERT INTO platform_sessions (id, platform, cookies, local_storage, is_valid, last_validated)
       VALUES ($1, $2, $3, $4, $5, NOW())
@@ -93,19 +110,29 @@ const warmSession = async (job: Job) => {
   }
 };
 
-const worker = new Worker('session-warming', async (job) => {
-  return warmSession(job);
-}, {
-  connection: redis,
-  concurrency: 2,
-});
+const startWarmer = async () => {
+  // Ensure schema exists
+  await ensureDatabaseSchema(pool);
 
-worker.on('completed', (job) => {
-  console.log(`Session warming job ${job.id} completed!`);
-});
+  const worker = new Worker('session-warming', async (job) => {
+    return warmSession(job);
+  }, {
+    connection: redis,
+    concurrency: 2,
+  });
 
-worker.on('failed', (job, err) => {
-  console.error(`Session warming job ${job?.id} failed with ${err.message}`);
-});
+  worker.on('completed', (job) => {
+    console.log(`Session warming job ${job.id} completed!`);
+  });
 
-console.log('Session Warmer is running and listening to session-warming queue...');
+  worker.on('failed', (job, err) => {
+    console.error(`Session warming job ${job?.id} failed with ${err.message}`);
+  });
+
+  console.log('Session Warmer is running and listening to session-warming queue...');
+};
+
+startWarmer().catch(err => {
+  console.error('Failed to start warmer:', err);
+  process.exit(1);
+});

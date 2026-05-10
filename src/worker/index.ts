@@ -23,6 +23,29 @@ const pool = new Pool({
 
 const warmingQueue = new Queue('session-warming', { connection: redis });
 
+/**
+ * 1. Automatic Schema Initialization: Ensure the platform_sessions table exists.
+ */
+export const ensureDatabaseSchema = async (pool: Pool) => {
+  const query = `
+    CREATE TABLE IF NOT EXISTS platform_sessions (
+      id TEXT PRIMARY KEY,
+      platform TEXT,
+      cookies JSONB,
+      local_storage JSONB,
+      is_valid BOOLEAN DEFAULT true,
+      is_blocked BOOLEAN DEFAULT false,
+      last_validated TIMESTAMP DEFAULT NOW()
+    );
+  `;
+  try {
+    await pool.query(query);
+    console.log('[Database] Schema initialized successfully.');
+  } catch (error) {
+    console.error('[Database] Failed to initialize schema:', error);
+  }
+};
+
 // 1. Persistent Browser Instance
 let browser: any;
 
@@ -35,22 +58,37 @@ const initBrowser = async () => {
 
 const runScraper = async (job: Job) => {
   const { platform, url, options = {} } = job.data;
+  const stealthLevel = options.stealthLevel || 0; // 0 = Fast, 1 = Browser, 2 = Ultra-Stealth
   
   const detectedPlatform = (platform && platform !== 'auto' && platform !== 'default') ? platform : PlatformDetector.detect(url);
-  job.log(`Starting scrape for ${detectedPlatform} at ${url}`);
+  job.log(`[Tier ${stealthLevel}] Starting scrape for ${detectedPlatform} at ${url}`);
   
   if (job.attemptsMade > 0) {
     const newProxy = `proxy-rotated-${uuidv4()}`;
-    job.log(`Retry attempt ${job.attemptsMade}/3. Requesting new proxy IP (${newProxy}) from Proxy Manager to rule out location-based UI variations.`);
+    job.log(`Retry attempt ${job.attemptsMade}/3. Requesting new proxy IP (${newProxy}) and escalating stealth.`);
     options.proxySessionId = newProxy;
     await job.updateData({ ...job.data, options });
   }
 
-  // 3. Create isolated context from persistent browser
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-  });
-  
+  // Tiered Context Configuration
+  const contextOptions: any = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 720 },
+    locale: 'en-US'
+  };
+
+  // Tier 2: Ultra-Stealth fingerprint evasion
+  if (stealthLevel >= 2) {
+    contextOptions.viewport = { 
+      width: Math.floor(Math.random() * (1920 - 1024) + 1024), 
+      height: Math.floor(Math.random() * (1080 - 768) + 768) 
+    };
+    const locales = ['en-US', 'en-GB', 'de-DE', 'fr-FR'];
+    contextOptions.locale = locales[Math.floor(Math.random() * locales.length)];
+    job.log(`[Ultra-Stealth] Randomized viewport: ${contextOptions.viewport.width}x${contextOptions.viewport.height}, Locale: ${contextOptions.locale}`);
+  }
+
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   
   try {
@@ -70,9 +108,10 @@ const runScraper = async (job: Job) => {
 
     await job.updateProgress(10);
     
-    // 4. Transformation & Extraction using Adapter
+    // Fix Navigation Error: Ensure we wait for the page to stabilize
+    await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+
     const adapter = AdapterFactory.getAdapter(url, platform);
-    
     const extractionOptions = {
       formats: options.formats || ['markdown', 'text', 'metadata', 'chunks'],
       ...options
@@ -87,20 +126,19 @@ const runScraper = async (job: Job) => {
     if (err.name === 'AuthWallError') {
       job.log(`[Auth Wall] ${err.message}. Invalidating session and requesting re-warming.`);
       
-      // Invalidate session in DB
       await pool.query('UPDATE platform_sessions SET is_valid = false WHERE platform = $1', [detectedPlatform]);
       
-      // Trigger new warming job
+      const priority = detectedPlatform === 'linkedin' ? 1 : 10;
       await warmingQueue.add('warm-session', { 
         platform: detectedPlatform, 
         url: new URL(url).origin 
-      });
+      }, { priority });
       
-      // 5. Fix Lock Error: Removed manual moveToDelayed. Rely on throw for native BullMQ retry.
       throw err;
     }
     if (err.name === 'BotChallengeError') {
-      job.log(`[Bot Challenge] ${err.message}. Forcing Playwright fallback for the next retry.`);
+      job.log(`[Bot Challenge] ${err.message}. Escalating stealth tier for the next retry.`);
+      options.stealthLevel = stealthLevel + 1;
       options.forcePlaywright = true;
       await job.updateData({ ...job.data, options });
       throw err;
@@ -112,20 +150,22 @@ const runScraper = async (job: Job) => {
     job.log(`Extraction failed: ${err.message}`);
     throw err;
   } finally {
-    // 4. Only close context, keeping the browser instance alive
     await context.close();
   }
 };
 
 const startWorker = async () => {
-  // 2. Initialize browser before starting the worker
+  // 1. Initialize schema
+  await ensureDatabaseSchema(pool);
+  
+  // 2. Initialize browser
   await initBrowser();
 
   const worker = new Worker('scrape-jobs', async (job) => {
     return runScraper(job);
   }, { 
     connection: redis,
-    concurrency: 5 // Process 5 jobs concurrently per worker instance
+    concurrency: 5
   });
 
   const publisher = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
@@ -145,7 +185,6 @@ const startWorker = async () => {
     const webhookUrl = job.data?.options?.webhook_url;
     if (webhookUrl) {
       try {
-        console.log(`Delivering webhook for job ${job.id} to ${webhookUrl}...`);
         const response = await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -156,7 +195,6 @@ const startWorker = async () => {
           })
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        console.log(`Webhook delivered successfully for job ${job.id}`);
       } catch (e: any) {
         console.error(`Failed to deliver webhook for job ${job.id}: ${e.message}`);
       }

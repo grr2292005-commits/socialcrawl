@@ -8,6 +8,7 @@ import { DOMCleaner } from '../extractors/DOMCleaner';
 import { StealthFetcher } from '../extractors/StealthFetcher';
 import * as cheerio from 'cheerio';
 import { AuthWallError } from '../errors/AuthWallError';
+import { BotChallengeError } from '../errors/BotChallengeError';
 
 export class DefaultAdapter extends BaseAdapter {
   protected platform = 'default';
@@ -29,25 +30,34 @@ export class DefaultAdapter extends BaseAdapter {
                           fetchResult.statusCode === 503 || 
                           fetchResult.html.includes('cf-browser-verification') || 
                           fetchResult.html.includes('captcha') ||
-                          fetchResult.html.includes('datadome');
+                          fetchResult.html.includes('datadome') ||
+                          fetchResult.html.includes('Verify you are human') ||
+                          fetchResult.html.includes('Access Denied') ||
+                          fetchResult.html.includes('Just a moment...') ||
+                          fetchResult.html.includes('Checking your browser') ||
+                          fetchResult.html.includes('Sorry.');
 
-      let isSparseSPA = false;
-      if (fetchResult.statusCode === 200 && !isChallenge) {
-        const $ = cheerio.load(fetchResult.html);
-        $('script, style, svg').remove();
-        const textContentLength = $('body').text().replace(/\s+/g, ' ').trim().length;
-        const hasSPAMounts = fetchResult.html.includes('id="root"') || 
-                             fetchResult.html.includes('id="__next"') || 
-                             fetchResult.html.includes('id="app"') || 
-                             fetchResult.html.includes('<yt-root>') ||
-                             fetchResult.html.includes('<app-root>');
-
-        if (textContentLength < 500 || hasSPAMounts) {
-          isSparseSPA = true;
-        }
+      if (isChallenge) {
+        console.log(`[Adapter] Bot Challenge detected in stealth fetch. Escalating to Playwright.`);
+        throw new BotChallengeError(`Bot Challenge detected at ${url} (Status: ${fetchResult.statusCode})`);
       }
 
-      if (fetchResult.statusCode === 200 && !isChallenge && !isSparseSPA) {
+      let isSparseSPA = false;
+      const $ = cheerio.load(fetchResult.html);
+      $('script, style, svg').remove();
+      const textContentLength = $('body').text().replace(/\s+/g, ' ').trim().length;
+      const hasSPAMounts = fetchResult.html.includes('id="root"') || 
+                           fetchResult.html.includes('id="__next"') || 
+                           fetchResult.html.includes('id="app"') || 
+                           fetchResult.html.includes('<yt-root>') ||
+                           fetchResult.html.includes('<app-root>');
+
+      if (fetchResult.statusCode === 200 && (textContentLength < 500 || hasSPAMounts)) {
+        console.log(`[Adapter] Stealth fetch returned sparse SPA shell.`);
+        isSparseSPA = true;
+      }
+
+      if (fetchResult.statusCode === 200 && !isSparseSPA) {
         console.log(`[Adapter] Stealth fetch succeeded for ${url}. Skipping Playwright.`);
         rawHtml = fetchResult.html;
       }
@@ -60,15 +70,19 @@ export class DefaultAdapter extends BaseAdapter {
       if (page.url() === 'about:blank' || page.url() !== url) {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        // 1. Fix Hydration: 5s window for heavy SPA apps
-        await page.waitForTimeout(5000);
+        // Optimize Reddit/Instagram: Only wait 5s if DOM is sparse
+        const content = await page.content();
+        const isSparse = content.length < 5000 || content.includes('id="root"') || content.includes('id="__next"');
+        if (isSparse) {
+          console.log(`[Adapter] Sparse DOM detected for ${url}. Waiting 5s for hydration...`);
+          await page.waitForTimeout(5000);
+        }
       }
 
-      // --- Post-Injection Session Validation ---
       const currentUrl = page.url();
       const content = await page.content();
       
-      // 2. Robust Auth Wall Detection
+      // Robust Auth Wall Detection
       const isAuthWall = currentUrl.includes('/login') || 
                          currentUrl.includes('/authwall') || 
                          currentUrl.includes('/signup') ||
@@ -86,8 +100,32 @@ export class DefaultAdapter extends BaseAdapter {
         throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
       }
       
-      // 3. Capture full DOM AFTER hydration wait
-      rawHtml = await page.content();
+      const isChallenge = content.includes('cf-browser-verification') || 
+                          content.includes('captcha') ||
+                          content.includes('datadome') ||
+                          content.includes('Verify you are human') ||
+                          content.includes('Access Denied') ||
+                          content.includes('Just a moment...') ||
+                          content.includes('Checking your browser') ||
+                          content.includes('Sorry.');
+
+      if (isChallenge) {
+        console.log(`[Adapter] Bot Challenge detected in Playwright. Throwing immediately.`);
+        throw new BotChallengeError(`Bot Challenge detected in Playwright at ${currentUrl}`);
+      }
+
+      // 2. Accurate Content Fetching: Wrap in try/catch with retry
+      try {
+        rawHtml = await page.content();
+      } catch (error: any) {
+        if (error.message.includes('navigation') || error.message.includes('closed')) {
+          console.log('[Adapter] Navigation/Context error during content fetch. Retrying once...');
+          await page.waitForTimeout(2000);
+          rawHtml = await page.content();
+        } else {
+          throw error;
+        }
+      }
     }
     
     const metadata = MetadataExtractor.extract(rawHtml);
@@ -109,11 +147,9 @@ export class DefaultAdapter extends BaseAdapter {
       if (formats.includes('cleaned_html')) {
         result.cleaned_html = cleanedArticle.content;
       }
-      
       if (formats.includes('text')) {
         result.text = cleanedArticle.textContent;
       }
-
       let markdownForChunking = '';
       if (formats.includes('markdown') || formats.includes('chunks')) {
         const markdownFormatter = new MarkdownFormatter();
@@ -122,7 +158,6 @@ export class DefaultAdapter extends BaseAdapter {
           result.markdown = markdownForChunking;
         }
       }
-
       if (formats.includes('chunks') && markdownForChunking) {
         const chunker = new SemanticChunker();
         result.chunked_content = chunker.chunkText(markdownForChunking, {
@@ -139,7 +174,6 @@ export class DefaultAdapter extends BaseAdapter {
           result.markdown = fallbackMarkdown;
         }
       }
-      
       if (formats.includes('chunks') && fallbackMarkdown) {
         const chunker = new SemanticChunker();
         result.chunked_content = chunker.chunkText(fallbackMarkdown, {
