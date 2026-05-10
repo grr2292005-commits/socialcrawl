@@ -4,7 +4,6 @@ import { Page } from 'playwright';
 import { z } from 'zod';
 import { ExtractionValidationError } from '../errors/ExtractionValidationError';
 
-// 2. Schema Resilience: All fields made optional to support various hydration states
 const TweetSchema = z.object({
   author: z.string().optional(),
   text: z.string().optional(),
@@ -50,6 +49,7 @@ export class TwitterAdapter extends DefaultAdapter {
       try {
         await page.waitForSelector(strategy.container, { timeout: 5000 });
         
+        // 1. Logic Fix: Verify variable names in $$eval
         const extracted = await page.$$eval(strategy.container, (elements, strat) => {
           return elements.map(el => {
             const authorEl = el.querySelector(strat.author);
@@ -73,7 +73,6 @@ export class TwitterAdapter extends DefaultAdapter {
       }
     }
 
-    // 3. Fallback Logic: Throw deterministic error if all selectors fail
     if (!validTweets) {
       console.log('[TwitterAdapter] All deterministic selectors failed.');
       throw new ExtractionValidationError(`Failed to extract valid Twitter data. DOM changed or blocked. Final Error: ${lastValidationError?.message}`);

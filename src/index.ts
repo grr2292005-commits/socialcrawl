@@ -6,7 +6,7 @@ import IORedis from 'ioredis';
 const fastify = Fastify({ logger: true });
 fastify.register(fastifyWebsocket);
 
-// Initialize Redis and Queue
+// Initialize Redis and Queues
 const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
   maxRetriesPerRequest: null,
 });
@@ -20,7 +20,7 @@ fastify.get('/health', async () => {
 
 // POST /scrape
 fastify.post('/scrape', async (request, reply) => {
-  const body = request.body as any; // In production, validate with Zod
+  const body = request.body as any;
   
   const job = await scrapeQueue.add('scrape', {
     platform: body.platform,
@@ -80,7 +80,6 @@ fastify.register(async function (app) {
   app.get('/stream/:id', { websocket: true }, (connection: SocketStream, req: FastifyRequest) => {
     const { id } = req.params as any;
     
-    // Create a dedicated Redis client for this connection to subscribe
     const subscriber = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
       maxRetriesPerRequest: null,
     });

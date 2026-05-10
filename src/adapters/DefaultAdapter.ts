@@ -31,7 +31,6 @@ export class DefaultAdapter extends BaseAdapter {
                           fetchResult.html.includes('captcha') ||
                           fetchResult.html.includes('datadome');
 
-      // Deterministic Content Density Check
       let isSparseSPA = false;
       if (fetchResult.statusCode === 200 && !isChallenge) {
         const $ = cheerio.load(fetchResult.html);
@@ -44,7 +43,6 @@ export class DefaultAdapter extends BaseAdapter {
                              fetchResult.html.includes('<app-root>');
 
         if (textContentLength < 500 || hasSPAMounts) {
-          console.log(`[Adapter] Stealth fetch returned sparse SPA shell (Text length: ${textContentLength}).`);
           isSparseSPA = true;
         }
       }
@@ -59,11 +57,10 @@ export class DefaultAdapter extends BaseAdapter {
       console.log(`[Adapter] Stealth fetch skipped or failed. Falling back to Playwright.`);
       usedPlaywright = true;
       
-      // 1. Speed Optimization: Ensure we use domcontentloaded for faster initial render
       if (page.url() === 'about:blank' || page.url() !== url) {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        // 2. SPA Hydration Fix: Deterministic hydration window for heavy React/SPA apps
+        // 1. Fix Hydration: 5s window for heavy SPA apps
         await page.waitForTimeout(5000);
       }
 
@@ -71,25 +68,28 @@ export class DefaultAdapter extends BaseAdapter {
       const currentUrl = page.url();
       const content = await page.content();
       
+      // 2. Robust Auth Wall Detection
       const isAuthWall = currentUrl.includes('/login') || 
                          currentUrl.includes('/authwall') || 
                          currentUrl.includes('/signup') ||
+                         currentUrl.includes('instagram.com/accounts/login') ||
+                         currentUrl.includes('reddit.com/login') ||
+                         currentUrl.includes('youtube.com/signin') ||
                          content.includes('input[type="password"]') ||
-                         (content.includes('sign in') && content.includes('password')) ||
-                         content.includes('Instagram') ||
                          content.includes('Sign up to see photos') ||
-                         content.includes('Log In');
+                         content.includes('Please log in') ||
+                         content.includes('Verify your identity') ||
+                         (content.includes('sign in') && content.includes('password'));
 
       if (isAuthWall) {
         console.log(`[Adapter] Auth Wall detected at ${currentUrl}. Flagging session as invalid.`);
         throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
       }
       
-      // 3. Capture fully rendered DOM after hydration wait
+      // 3. Capture full DOM AFTER hydration wait
       rawHtml = await page.content();
     }
     
-    // 1. Metadata Extraction
     const metadata = MetadataExtractor.extract(rawHtml);
     result.title = metadata.title;
     result.description = metadata.description;
@@ -102,10 +102,7 @@ export class DefaultAdapter extends BaseAdapter {
       result.html = rawHtml;
     }
 
-    // 2. Advanced Boilerplate Removal & DOM Cleaning
     const cleanedRawHtml = DOMCleaner.cleanContent(rawHtml);
-
-    // 3. Mozilla Readability Processing
     const cleanedArticle = ReadabilityExtractor.extract(cleanedRawHtml, url);
     
     if (cleanedArticle) {
@@ -134,7 +131,6 @@ export class DefaultAdapter extends BaseAdapter {
         });
       }
     } else {
-      // Fallback if readability fails
       let fallbackMarkdown = '';
       if (formats.includes('markdown') || formats.includes('chunks')) {
         const markdownFormatter = new MarkdownFormatter();
@@ -153,7 +149,6 @@ export class DefaultAdapter extends BaseAdapter {
       }
     }
 
-    // 4. Screenshots (Only available if Playwright was actually used)
     if (formats.includes('screenshot') && usedPlaywright) {
       const screenshotBuffer = await page.screenshot({ fullPage: true });
       result.screenshot = screenshotBuffer.toString('base64');
