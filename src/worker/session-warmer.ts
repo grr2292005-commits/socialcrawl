@@ -5,7 +5,7 @@ import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
-import { ensureDatabaseSchema, applyAdvancedStealth } from './index';
+import { ensureDatabaseSchema, applyFingerprint } from './index';
 
 chromium.use(stealthPlugin());
 
@@ -29,30 +29,27 @@ const warmSession = async (job: Job) => {
   // Fingerprint Generation
   const contextOptions: any = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { 
-      width: Math.floor(Math.random() * (1920 - 1366) + 1366), 
-      height: Math.floor(Math.random() * (1080 - 768) + 768) 
-    },
-    deviceScaleFactor: Math.random() > 0.5 ? 1 : 2,
+    viewport: { width: 1920, height: 1080 },
+    deviceScaleFactor: 1,
     locale: 'en-US'
   };
 
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
 
-  // 3. Schema Guard: Use the same advanced stealth
-  await applyAdvancedStealth(page);
+  // 2. Reliability: Use the SAME applyFingerprint(page) logic
+  await applyFingerprint(page);
 
   try {
-    // 1. Identity Simulation: Navigate to Google first
-    job.log('Navigating to Google to establish referrer...');
+    // 1. Reference Forging: Create a Search Referrer
+    job.log('Forging referrer via Google...');
     await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await delay(2000);
+    await delay(3000); // Wait 3 seconds as requested
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await job.updateProgress(30);
 
-    // 2. Behavioral Jitter
+    // Behavioral Jitter
     for (let i = 0; i < 5; i++) {
       await randomDelay(100, 800);
       
@@ -86,13 +83,15 @@ const warmSession = async (job: Job) => {
       return ls;
     });
 
+    // 3. Schema: Ensure is_valid = true and is_blocked = false upon success
     const query = `
-      INSERT INTO platform_sessions (id, platform, cookies, local_storage, is_valid, last_validated)
-      VALUES ($1, $2, $3, $4, $5, NOW())
+      INSERT INTO platform_sessions (id, platform, cookies, local_storage, is_valid, is_blocked, last_validated)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
       ON CONFLICT (id) DO UPDATE SET
         cookies = EXCLUDED.cookies,
         local_storage = EXCLUDED.local_storage,
         is_valid = EXCLUDED.is_valid,
+        is_blocked = EXCLUDED.is_blocked,
         last_validated = NOW();
     `;
     
@@ -103,7 +102,8 @@ const warmSession = async (job: Job) => {
       platform,
       JSON.stringify(cookies),
       JSON.stringify(localStorage),
-      true
+      true,
+      false
     ]);
 
     job.log(`Session ${sessionId} successfully warmed.`);

@@ -33,6 +33,7 @@ export class DefaultAdapter extends BaseAdapter {
                           fetchResult.html.includes('datadome') ||
                           fetchResult.html.includes('Verify you are human') ||
                           fetchResult.html.includes('Access Denied') ||
+                          fetchResult.html.includes('Checking your browser') ||
                           fetchResult.html.includes('Access to this page has been denied') ||
                           fetchResult.html.includes('Checking if the site connection is secure') ||
                           fetchResult.html.includes('Just a moment...') ||
@@ -41,6 +42,7 @@ export class DefaultAdapter extends BaseAdapter {
 
       if (isChallenge) {
         console.log(`[Adapter] Bot Challenge detected in stealth fetch.`);
+        // 3. Throwing Logic: If isChallenge is detected, throw BotChallengeError immediately
         throw new BotChallengeError(`Bot Challenge detected at ${url}`);
       }
 
@@ -69,7 +71,6 @@ export class DefaultAdapter extends BaseAdapter {
       if (page.url() === 'about:blank' || page.url() !== url) {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
         
-        // 2. Dynamic Waiting for Reddit or YouTube
         if (url.includes('reddit.com') || url.includes('youtube.com')) {
           console.log(`[Adapter] Dynamic waiting for ${url}...`);
           await Promise.race([
@@ -88,13 +89,13 @@ export class DefaultAdapter extends BaseAdapter {
 
       const currentUrl = page.url();
       
-      // 1. Logic Fix: Wrap page.content in try/catch with retry
+      // 1. Fix Race Condition: Wrap rawHtml = await page.content(); in a retry block
       try {
         rawHtml = await page.content();
       } catch (error: any) {
         if (error.message.includes('navigation') || error.message.includes('closed')) {
           console.log('[Adapter] Navigation error during content fetch. Retrying in 3s...');
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(3000); // Wait 3 seconds as requested
           rawHtml = await page.content();
         } else {
           throw error;
@@ -118,19 +119,20 @@ export class DefaultAdapter extends BaseAdapter {
         throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
       }
       
-      // 3. Intelligent Block Detection
+      // 2. Accurate Detection: Add "Checking your browser" and "Access Denied"
       const isChallenge = rawHtml.includes('cf-browser-verification') || 
-                          rawHtml.includes('captcha') ||
-                          rawHtml.includes('datadome') ||
-                          rawHtml.includes('Verify you are human') ||
-                          rawHtml.includes('Access Denied') ||
-                          rawHtml.includes('Access to this page has been denied') ||
-                          rawHtml.includes('Checking if the site connection is secure') ||
-                          rawHtml.includes('Just a moment...') ||
-                          rawHtml.includes('Checking your browser') ||
+                          rawHtml.includes('captcha') || 
+                          rawHtml.includes('datadome') || 
+                          rawHtml.includes('Verify you are human') || 
+                          rawHtml.includes('Access Denied') || 
+                          rawHtml.includes('Access to this page has been denied') || 
+                          rawHtml.includes('Checking if the site connection is secure') || 
+                          rawHtml.includes('Just a moment...') || 
+                          rawHtml.includes('Checking your browser') || 
                           (url.includes('ycombinator') && rawHtml.includes('Sorry.'));
 
       if (isChallenge) {
+        // 3. Throwing Logic: If isChallenge is detected, throw BotChallengeError immediately
         throw new BotChallengeError(`Bot Challenge detected in Playwright at ${currentUrl}`);
       }
     }

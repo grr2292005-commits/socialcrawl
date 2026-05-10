@@ -57,30 +57,57 @@ const initBrowser = async () => {
 };
 
 /**
- * 2. CDP Stealth Overrides
+ * 2. applyFingerprint(page): Advanced Stealth Engine
  */
-export const applyAdvancedStealth = async (page: any) => {
+export const applyFingerprint = async (page: any) => {
   await page.addInitScript(() => {
-    // Mask webdriver
+    // Override navigator.webdriver to undefined
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 
-    // Override WebGL Renderer
+    // Mock navigator.languages to ['en-US', 'en']
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+    });
+
+    // Randomize WebGLRenderingContext.getParameter to return a realistic GPU string
     const getParameter = HTMLCanvasElement.prototype.getContext('2d')?.canvas.getContext('webgl')?.getParameter;
     if (getParameter) {
       // @ts-ignore
       WebGLRenderingContext.prototype.getParameter = function(parameter) {
         // UNMASKED_VENDOR_WEBGL
-        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37445) {
+          const vendors = ['Intel Inc.', 'Apple Inc.', 'Google Inc.'];
+          return vendors[Math.floor(Math.random() * vendors.length)];
+        }
         // UNMASKED_RENDERER_WEBGL
-        if (parameter === 37446) return 'Intel(R) Iris(TM) Plus Graphics 640';
+        if (parameter === 37446) {
+          const renderers = [
+            'Intel(R) Iris(TM) Plus Graphics 640',
+            'Apple M1',
+            'ANGLE (Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0)'
+          ];
+          return renderers[Math.floor(Math.random() * renderers.length)];
+        }
         return getParameter.apply(this, [parameter]);
       };
     }
 
-    // Fake Plugins
-    // @ts-ignore
+    // Fake navigator.plugins.length to be a random number between 3 and 5
+    const pluginCount = Math.floor(Math.random() * 3) + 3;
+    const mockPlugins = new Array(pluginCount).fill(null).map((_, i) => ({
+      name: `Plugin ${i}`,
+      description: `Description ${i}`,
+      filename: `file${i}.so`
+    }));
+
     Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
+      get: () => {
+        const plugins: any = mockPlugins;
+        plugins.refresh = () => {};
+        plugins.item = (i: number) => mockPlugins[i];
+        plugins.namedItem = (name: string) => mockPlugins.find(p => p.name === name);
+        return plugins;
+      },
     });
   });
 };
@@ -99,20 +126,22 @@ const runScraper = async (job: Job) => {
     await job.updateData({ ...job.data, options });
   }
 
-  // 1. Fingerprint Generator
+  // 1. Enhanced Context: Randomized Viewport and DeviceScaleFactor
   const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
   ];
 
+  const viewports = [
+    { width: 1366, height: 768 },
+    { width: 1920, height: 1080 }
+  ];
+
   const contextOptions: any = {
     userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
-    viewport: { 
-      width: Math.floor(Math.random() * (1920 - 1366) + 1366), 
-      height: Math.floor(Math.random() * (1080 - 768) + 768) 
-    },
-    deviceScaleFactor: Math.random() > 0.5 ? 1 : 2,
+    viewport: viewports[Math.floor(Math.random() * viewports.length)],
+    deviceScaleFactor: 1, // Explicitly set to 1
     locale: 'en-US',
     hardwareConcurrency: Math.floor(Math.random() * 4) + 4
   };
@@ -120,8 +149,8 @@ const runScraper = async (job: Job) => {
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   
-  // 3. Apply CDP Stealth
-  await applyAdvancedStealth(page);
+  // 3. Call applyFingerprint(page) on every new page before any navigation
+  await applyFingerprint(page);
   
   try {
     if (detectedPlatform && detectedPlatform !== 'default') {
