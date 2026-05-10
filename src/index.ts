@@ -1,8 +1,10 @@
-import Fastify from 'fastify';
+import Fastify, { FastifyRequest } from 'fastify';
+import fastifyWebsocket, { WebSocket as SocketStream } from '@fastify/websocket';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 
 const fastify = Fastify({ logger: true });
+fastify.register(fastifyWebsocket);
 
 // Initialize Redis and Queue
 const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
@@ -58,8 +60,8 @@ fastify.get('/jobs/:id', async (request, reply) => {
 });
 
 // WS /stream/:id
-fastify.register(async function (fastify) {
-  fastify.get('/stream/:id', { websocket: true }, (connection /* SocketStream */, req /* FastifyRequest */) => {
+fastify.register(async function (app) {
+  app.get('/stream/:id', { websocket: true }, (connection: SocketStream, req: FastifyRequest) => {
     const { id } = req.params as any;
     
     // Create a dedicated Redis client for this connection to subscribe
@@ -71,26 +73,26 @@ fastify.register(async function (fastify) {
 
     subscriber.subscribe(channel, (err) => {
       if (err) {
-        fastify.log.error(`Failed to subscribe to ${channel}`);
-        connection.socket.send(JSON.stringify({ error: 'Failed to subscribe' }));
+        app.log.error(`Failed to subscribe to ${channel}`);
+        connection.send(JSON.stringify({ error: 'Failed to subscribe' }));
       }
     });
 
     subscriber.on('message', (ch, message) => {
       if (ch === channel) {
-        connection.socket.send(message);
+        connection.send(message);
         
         try {
           const parsed = JSON.parse(message);
           if (parsed.status === 'completed' || parsed.status === 'failed') {
             subscriber.quit();
-            connection.socket.close();
+            connection.close();
           }
         } catch (e) {}
       }
     });
 
-    connection.socket.on('close', () => {
+    connection.on('close', () => {
       subscriber.quit();
     });
   });
