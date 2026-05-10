@@ -11,11 +11,13 @@
     "dev:worker": "ts-node-dev src/worker/index.ts"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.5.0",
     "bullmq": "^5.7.0",
     "cheerio": "^1.0.0-rc.12",
     "fastify": "^4.26.0",
+    "got-scraping": "^4.2.1",
     "ioredis": "^5.3.2",
     "js-tiktoken": "^1.0.10",
     "jsdom": "^24.0.0",

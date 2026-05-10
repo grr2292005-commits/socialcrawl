@@ -57,6 +57,45 @@ fastify.get('/jobs/:id', async (request, reply) => {
   };
 });
 
+// WS /stream/:jobId
+fastify.register(async function (fastify) {
+  fastify.get('/stream/:jobId', { websocket: true }, (connection /* SocketStream */, req /* FastifyRequest */) => {
+    const { jobId } = req.params as any;
+    
+    // Create a dedicated Redis client for this connection to subscribe
+    const subscriber = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+      maxRetriesPerRequest: null,
+    });
+
+    const channel = `job_events:${jobId}`;
+
+    subscriber.subscribe(channel, (err) => {
+      if (err) {
+        fastify.log.error(`Failed to subscribe to ${channel}`);
+        connection.socket.send(JSON.stringify({ error: 'Failed to subscribe' }));
+      }
+    });
+
+    subscriber.on('message', (ch, message) => {
+      if (ch === channel) {
+        connection.socket.send(message);
+        
+        try {
+          const parsed = JSON.parse(message);
+          if (parsed.status === 'completed' || parsed.status === 'failed') {
+            subscriber.quit();
+            connection.socket.close();
+          }
+        } catch (e) {}
+      }
+    });
+
+    connection.socket.on('close', () => {
+      subscriber.quit();
+    });
+  });
+});
+
 const start = async () => {
   try {
     await fastify.listen({ port: 3000, host: '0.0.0.0' });

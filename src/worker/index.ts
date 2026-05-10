@@ -71,12 +71,26 @@ const worker = new Worker('scrape-jobs', async (job) => {
   concurrency: 5 // Process 5 jobs concurrently per worker instance
 });
 
-worker.on('completed', (job) => {
+const publisher = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+  maxRetriesPerRequest: null,
+});
+
+worker.on('progress', (job, progress) => {
+  if (job) {
+    publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'progress', progress }));
+  }
+});
+
+worker.on('completed', (job, result) => {
   console.log(`Job ${job.id} has completed!`);
+  publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'completed', data: result }));
 });
 
 worker.on('failed', (job, err) => {
   console.error(`Job ${job?.id} has failed with ${err.message}`);
+  if (job) {
+    publisher.publish(`job_events:${job.id}`, JSON.stringify({ status: 'failed', error: err.message }));
+  }
 });
 
 console.log('Worker is running and listening to scrape-jobs...');
