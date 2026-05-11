@@ -3,7 +3,6 @@ import { Page } from 'playwright';
 import { ReadabilityExtractor } from '../extractors/ReadabilityExtractor';
 import { MetadataExtractor } from '../extractors/MetadataExtractor';
 import { MarkdownFormatter } from '../formatters/MarkdownFormatter';
-import { SemanticChunker } from '../chunkers/SemanticChunker';
 import { DOMCleaner } from '../extractors/DOMCleaner';
 import { StealthFetcher } from '../extractors/StealthFetcher';
 import * as cheerio from 'cheerio';
@@ -15,162 +14,93 @@ export class DefaultAdapter extends BaseAdapter {
 
   public async extract(page: Page, url: string, options: any): Promise<ExtractionResult> {
     const formats = options.formats || ['markdown', 'json'];
-
     let result: ExtractionResult = { url, platform: this.platform };
+    
+    // ALTERNATIVE ENTRY: Bypass Datadome
+    if (url.includes('reddit.com')) {
+      url = url.replace('www.reddit.com', 'old.reddit.com');
+    }
+    
     let rawHtml = '';
-    let usedPlaywright = false;
-
-    // 0. Attempt Stealth Fetch First
+    
     if (!options.forcePlaywright) {
-      console.log(`[Adapter] Attempting stealth fetch for ${url}`);
       const fetchResult = await StealthFetcher.fetch(url, options.proxySessionId);
+      const isChallenge = [403, 429, 503].includes(fetchResult.statusCode) || 
+                          ['cf-browser-verification', 'captcha', 'datadome', 'Access Denied', 'Performing security verification', 'Just a moment...'].some(c => fetchResult.html.includes(c));
 
-      const isChallenge = fetchResult.statusCode === 403 || 
-                          fetchResult.statusCode === 429 || 
-                          fetchResult.statusCode === 503 || 
-                          fetchResult.html.includes('cf-browser-verification') || 
-                          fetchResult.html.includes('captcha') ||
-                          fetchResult.html.includes('datadome') ||
-                          fetchResult.html.includes('Verify you are human') ||
-                          fetchResult.html.includes('Access Denied') ||
-                          fetchResult.html.includes('Checking your browser') ||
-                          fetchResult.html.includes('Access to this page has been denied') ||
-                          fetchResult.html.includes('Checking if the site connection is secure') ||
-                          fetchResult.html.includes('Just a moment...') ||
-                          fetchResult.html.includes('Checking your browser') ||
-                          (url.includes('ycombinator') && fetchResult.html.includes('Sorry.'));
-
-      if (isChallenge) {
-        console.log(`[Adapter] Bot Challenge detected in stealth fetch.`);
-        // 3. Throwing Logic: If isChallenge is detected, throw BotChallengeError immediately
-        throw new BotChallengeError(`Bot Challenge detected at ${url}`);
-      }
-
-      let isSparseSPA = false;
-      const $ = cheerio.load(fetchResult.html);
-      $('script, style, svg').remove();
-      const textContentLength = $('body').text().replace(/\s+/g, ' ').trim().length;
-      const hasSPAMounts = fetchResult.html.includes('id="root"') || 
-                           fetchResult.html.includes('id="__next"') || 
-                           fetchResult.html.includes('id="app"') || 
-                           fetchResult.html.includes('<yt-root>') ||
-                           fetchResult.html.includes('<app-root>');
-
-      if (fetchResult.statusCode === 200 && (textContentLength < 500 || hasSPAMounts)) {
-        isSparseSPA = true;
-      }
-
-      if (fetchResult.statusCode === 200 && !isSparseSPA) {
+      if (fetchResult.statusCode === 200 && !isChallenge) {
         rawHtml = fetchResult.html;
       }
     }
 
     if (!rawHtml) {
-      usedPlaywright = true;
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
       
-      if (page.url() === 'about:blank' || page.url() !== url) {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        
-        if (url.includes('reddit.com') || url.includes('youtube.com')) {
-          console.log(`[Adapter] Dynamic waiting for ${url}...`);
-          await Promise.race([
-            page.waitForSelector('main', { timeout: 8000 }),
-            page.waitForSelector('#content', { timeout: 8000 }),
-            page.waitForTimeout(5000)
-          ]).catch(() => {});
-        } else {
-          const content = await page.content();
-          const isSparse = content.length < 5000 || content.includes('id="root"') || content.includes('id="__next"');
-          if (isSparse) {
-            await page.waitForTimeout(5000);
-          }
-        }
+      // Patient Hydration & Interaction
+      if (url.includes('linkedin.com')) {
+        await page.waitForSelector('.main-content, .profile-view, #main', { timeout: 10000 }).catch(() => {});
+        try {
+          // Attempt to click "See more" or "About" to trigger full hydration
+          await page.click('button[aria-label*="See more"], .pv-about-section__expand-link', { timeout: 3000 }).catch(() => {});
+        } catch (e) {}
       }
 
-      const currentUrl = page.url();
-      
-      // 1. Fix Race Condition: Wrap rawHtml = await page.content(); in a retry block
+      await page.waitForTimeout(2000);
       try {
-        rawHtml = await page.content();
-      } catch (error: any) {
-        if (error.message.includes('navigation') || error.message.includes('closed')) {
-          console.log('[Adapter] Navigation error during content fetch. Retrying in 3s...');
-          await page.waitForTimeout(3000); // Wait 3 seconds as requested
-          rawHtml = await page.content();
-        } else {
-          throw error;
-        }
-      }
-      
-      // Robust Auth Wall Detection
-      const isAuthWall = currentUrl.includes('/login') || 
-                         currentUrl.includes('/authwall') || 
-                         currentUrl.includes('/signup') ||
-                         currentUrl.includes('instagram.com/accounts/login') ||
-                         currentUrl.includes('reddit.com/login') ||
-                         currentUrl.includes('youtube.com/signin') ||
-                         rawHtml.includes('input[type="password"]') ||
-                         rawHtml.includes('Sign up to see photos') ||
-                         rawHtml.includes('Please log in') ||
-                         rawHtml.includes('Verify your identity') ||
-                         (rawHtml.includes('sign in') && rawHtml.includes('password'));
+        await page.mouse.wheel(0, 1000);
+        await page.waitForTimeout(3000);
+      } catch (e) {}
 
-      if (isAuthWall) {
-        throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
-      }
+      rawHtml = await page.content().catch(() => '');
       
-      // 2. Accurate Detection: Add "Checking your browser" and "Access Denied"
-      const isChallenge = rawHtml.includes('cf-browser-verification') || 
-                          rawHtml.includes('captcha') || 
-                          rawHtml.includes('datadome') || 
-                          rawHtml.includes('Verify you are human') || 
-                          rawHtml.includes('Access Denied') || 
-                          rawHtml.includes('Access to this page has been denied') || 
-                          rawHtml.includes('Checking if the site connection is secure') || 
-                          rawHtml.includes('Just a moment...') || 
-                          rawHtml.includes('Checking your browser') || 
-                          (url.includes('ycombinator') && rawHtml.includes('Sorry.'));
+      const currentUrl = page.url();
+      const isAuthWall = ['/login', '/authwall', 'instagram.com/accounts/login', 'reddit.com/login'].some(p => currentUrl.includes(p));
+      const isPlaywrightChallenge = [
+        'cf-browser-verification', 'datadome', 'Access Denied', 
+        'Performing security verification', 'Just a moment...',
+        'Verify you are human', 'Checking your browser',
+        'checking if the site connection is secure'
+      ].some(c => {
+        const found = rawHtml.toLowerCase().includes(c.toLowerCase());
+        if (!found) return false;
+        // Domain exclusions for false positives
+        if (c.toLowerCase() === 'verify you are human' && url.includes('github.com')) return false;
+        if (c.toLowerCase() === 'just a moment...' && url.includes('linkedin.com')) return false;
+        return true;
+      });
 
-      if (isChallenge) {
-        // 3. Throwing Logic: If isChallenge is detected, throw BotChallengeError immediately
-        throw new BotChallengeError(`Bot Challenge detected in Playwright at ${currentUrl}`);
-      }
+      if (isAuthWall) throw new AuthWallError(`Auth Wall detected at ${currentUrl}`);
+      if (isPlaywrightChallenge) throw new BotChallengeError(`Bot Challenge detected in Playwright at ${currentUrl}`);
     }
     
     const metadata = MetadataExtractor.extract(rawHtml);
     result.title = metadata.title;
-    result.description = metadata.description;
-    result.language = metadata.language;
-    result.links = metadata.links;
-    result.images = metadata.images;
     result.metadata = metadata.all_metadata;
 
-    if (formats.includes('html')) {
-      result.html = rawHtml;
-    }
+    const cleanedArticle = ReadabilityExtractor.extract(DOMCleaner.cleanContent(rawHtml), url);
+    if (cleanedArticle && cleanedArticle.textContent.length > 200 && formats.includes('markdown')) {
+      result.markdown = new MarkdownFormatter().format(cleanedArticle.content);
+    } else {
+      // STRUCTURAL FALLBACK: Manually harvest text if Readability fails
+      const $ = cheerio.load(rawHtml);
+      $('script, style, nav, footer, header').remove();
+      const fallBackText: string[] = [];
+      
+      // Grab main content blocks & tables (for HackerNews/Reddit)
+      $('article, main, .main-content, .profile-view, #main, section, table, .user-profile').each((_, el) => {
+        const text = $(el).text().trim().replace(/\s+/g, ' ');
+        if (text.length > 10) fallBackText.push(text);
+      });
 
-    const cleanedRawHtml = DOMCleaner.cleanContent(rawHtml);
-    const cleanedArticle = ReadabilityExtractor.extract(cleanedRawHtml, url);
-    
-    if (cleanedArticle) {
-      if (formats.includes('cleaned_html')) result.cleaned_html = cleanedArticle.content;
-      if (formats.includes('text')) result.text = cleanedArticle.textContent;
-
-      let markdownForChunking = '';
-      if (formats.includes('markdown') || formats.includes('chunks')) {
-        const markdownFormatter = new MarkdownFormatter();
-        markdownForChunking = markdownFormatter.format(cleanedArticle.content);
-        if (formats.includes('markdown')) result.markdown = markdownForChunking;
+      // If still too short, grab all paragraphs and divs with text
+      if (fallBackText.join('\n').length < 100) {
+        $('p, div').each((_, el) => {
+          const text = $(el).text().trim().replace(/\s+/g, ' ');
+          if (text.length > 20) fallBackText.push(text);
+        });
       }
-      if (formats.includes('chunks') && markdownForChunking) {
-        const chunker = new SemanticChunker();
-        result.chunked_content = chunker.chunkText(markdownForChunking, { url, title: result.title });
-      }
-    }
 
-    if (formats.includes('screenshot') && usedPlaywright) {
-      const screenshotBuffer = await page.screenshot({ fullPage: true });
-      result.screenshot = screenshotBuffer.toString('base64');
+      result.markdown = fallBackText.slice(0, 50).join('\n\n') || metadata.description || metadata.title || "No readable content found.";
     }
 
     return result;

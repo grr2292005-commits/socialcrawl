@@ -27,15 +27,8 @@ export class DOMCleaner {
     const $ = cheerio.load(html);
 
     const fullText = $('body').text() || '';
-    if (
-      fullText.includes('security service to protect against malicious bots') ||
-      fullText.includes('Checking if the site connection is secure') ||
-      fullText.includes('Cloudflare') ||
-      fullText.includes('Please wait while your request is being verified')
-    ) {
-      throw new BotChallengeError('Bot challenge detected in content (Cloudflare/WAF).');
-    }
-
+    // Challenge detection moved to Adapters for more granular control.
+    
     // 1. Remove noise based on basic selector matching
     this.NOISE_SELECTORS.forEach(selector => {
       $(selector).remove();
