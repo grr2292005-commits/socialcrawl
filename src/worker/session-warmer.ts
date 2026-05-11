@@ -6,13 +6,16 @@ import { Page, BrowserContext } from 'playwright';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
-import { ensureDatabaseSchema, applyFingerprint } from './index';
+import { ensureDatabaseSchema } from './index';
+import { ProxyManager } from '../core/ProxyManager';
 
 chromium.use(stealthPlugin());
 
 const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
   maxRetriesPerRequest: null,
 });
+
+const proxyManager = ProxyManager.getInstance();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://postgres:password@postgres:5432/socialcrawl',
@@ -23,13 +26,14 @@ const randomDelay = (min: number, max: number) => delay(Math.floor(Math.random()
 
 const warmSession = async (job: Job) => {
   const { platform, url } = job.data;
-  job.log(`Warming session for ${platform} at ${url}`);
+  console.log(`[Warming] Processing ${platform} at ${url}`);
 
+  const proxy = proxyManager.getProxy();
   const browser = await chromium.launch({ 
     headless: true, 
     args: ['--disable-blink-features=AutomationControlled', '--no-sandbox']
   });
-  
+
   const contextOptions: any = {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     viewport: { width: 1920, height: 1080 },
@@ -45,10 +49,13 @@ const warmSession = async (job: Job) => {
     };
   }
 
+  if (proxy) {
+    console.log(`[Warming] Using proxy: ${proxy.split('@').pop()}`);
+    contextOptions.proxy = { server: proxy };
+  }
+
   const context: BrowserContext = await browser.newContext(contextOptions);
   const page: Page = await context.newPage();
-
-  await applyFingerprint(page);
 
   try {
     job.log('Forging referrer via Google...');

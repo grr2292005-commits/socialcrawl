@@ -34,38 +34,59 @@ export class DefaultAdapter extends BaseAdapter {
     }
 
     if (!rawHtml) {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      // 1. Navigation with adaptive waiting
+      const navigationTimeout = 30000;
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navigationTimeout }).catch(() => {});
       
-      // Patient Hydration & Interaction
+      // 2. Platform-Specific Hydration
       if (url.includes('linkedin.com')) {
         await page.waitForSelector('.main-content, .profile-view, #main', { timeout: 10000 }).catch(() => {});
         try {
-          // Attempt to click "See more" or "About" to trigger full hydration
           await page.click('button[aria-label*="See more"], .pv-about-section__expand-link', { timeout: 3000 }).catch(() => {});
         } catch (e) {}
+      } else if (url.includes('reddit.com')) {
+        await page.waitForSelector('.usertext, .content, #header-bottom-left, .Post, .thing, .sitetable', { timeout: 10000 }).catch(() => {});
+        // Handle "Mature Content" or "Use App" interstitials
+        try {
+          await page.click('button:has-text("Yes"), button:has-text("Continue"), .action-button', { timeout: 3000 }).catch(() => {});
+        } catch (e) {}
+      } else if (url.includes('github.com')) {
+        await page.waitForSelector('.vcard-names, .repository-content, .markdown-body', { timeout: 10000 }).catch(() => {});
+      } else if (url.includes('medium.com')) {
+        await page.waitForSelector('article, [data-testid="author-name"]', { timeout: 10000 }).catch(() => {});
       }
 
+      // 3. Human-like interaction
       await page.waitForTimeout(2000);
       try {
-        await page.mouse.wheel(0, 1000);
-        await page.waitForTimeout(3000);
+        await page.mouse.wheel(0, 750);
+        await page.waitForTimeout(1000);
+        await page.mouse.wheel(0, 750);
+        await page.waitForTimeout(2000);
       } catch (e) {}
 
       rawHtml = await page.content().catch(() => '');
       
       const currentUrl = page.url();
       const isAuthWall = ['/login', '/authwall', 'instagram.com/accounts/login', 'reddit.com/login'].some(p => currentUrl.includes(p));
+      
+      // 4. LOOSENED CHALLENGE DETECTION: Only match true WAFs/Blocks
       const isPlaywrightChallenge = [
-        'cf-browser-verification', 'datadome', 'Access Denied', 
-        'Performing security verification', 'Just a moment...',
-        'Verify you are human', 'Checking your browser',
-        'checking if the site connection is secure'
+        'cf-browser-verification', 'datadome',
+        'Performing security verification', 'Verify you are human',
+        'checking if the site connection is secure',
+        'blocked by network security',
+        'out of nothing, something'
       ].some(c => {
         const found = rawHtml.toLowerCase().includes(c.toLowerCase());
         if (!found) return false;
+        
         // Domain exclusions for false positives
         if (c.toLowerCase() === 'verify you are human' && url.includes('github.com')) return false;
-        if (c.toLowerCase() === 'just a moment...' && url.includes('linkedin.com')) return false;
+        if (url.includes('linkedin.com') || url.includes('youtube.com') || url.includes('instagram.com') || url.includes('github.com') || url.includes('reddit.com')) {
+          // If we have dense content, ignore transient WAF strings
+          if (rawHtml.length > 5000) return false;
+        }
         return true;
       });
 
@@ -101,6 +122,29 @@ export class DefaultAdapter extends BaseAdapter {
       }
 
       result.markdown = fallBackText.slice(0, 50).join('\n\n') || metadata.description || metadata.title || "No readable content found.";
+    }
+
+    // AUTONOMOUS SPIDERING: Link Extraction
+    if (options.isCrawl) {
+      const $ = cheerio.load(rawHtml);
+      const internalLinks = new Set<string>();
+      const baseUrl = new URL(url);
+      
+      $('a[href]').each((_, el) => {
+        try {
+          const href = $(el).attr('href');
+          if (!href) return;
+          
+          const absoluteUrl = new URL(href, url);
+          // Only same root domain, exclude anchors and non-http
+          if (absoluteUrl.hostname === baseUrl.hostname && absoluteUrl.protocol.startsWith('http')) {
+            const cleanUrl = absoluteUrl.origin + absoluteUrl.pathname + absoluteUrl.search;
+            if (cleanUrl !== url) internalLinks.add(cleanUrl);
+          }
+        } catch (e) {}
+      });
+      
+      result.internal_links = Array.from(internalLinks);
     }
 
     return result;

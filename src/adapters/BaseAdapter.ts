@@ -16,6 +16,7 @@ export interface ExtractionResult {
   extracted_entities?: Record<string, any>[];
   chunked_content?: any[];
   screenshot?: string; // base64
+  internal_links?: string[];
 }
 
 export abstract class BaseAdapter {
