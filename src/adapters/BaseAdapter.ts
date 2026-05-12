@@ -17,6 +17,7 @@ export interface ExtractionResult {
   chunked_content?: any[];
   screenshot?: string; // base64
   internal_links?: string[];
+  success?: boolean;
 }
 
 export abstract class BaseAdapter {

@@ -4,7 +4,8 @@
   "description": "Open-core Social Media Intelligence Platform",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
+    "obfuscate": "javascript-obfuscator ./dist --output ./dist --compact true --control-flow-flattening true --dead-code-injection true --string-array true --string-array-encoding base64 --disable-console-output false",
     "start:api": "node dist/index.js",
     "start:worker": "node dist/worker/index.js",
     "dev:api": "ts-node-dev src/index.ts",
@@ -37,8 +38,10 @@
     "@types/pg": "^8.11.2",
     "@types/turndown": "^5.0.4",
     "@types/uuid": "^9.0.8",
+    "javascript-obfuscator": "^5.4.2",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.3.3"
   }
 }

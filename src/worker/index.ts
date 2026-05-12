@@ -9,15 +9,12 @@ import { SessionInjector } from '../core/SessionInjector';
 import { PlatformDetector } from '../adapters/PlatformDetector';
 import { v4 as uuidv4 } from 'uuid';
 import { Pool } from 'pg';
-import { ProxyManager } from '../core/ProxyManager';
 
 chromium.use(stealthPlugin());
 
 const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', { maxRetriesPerRequest: null });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL || 'postgres://postgres:password@postgres:5432/socialcrawl' });
-const warmingQueue = new Queue('session-warming', { connection: redis });
 const scrapeQueue = new Queue('scrape-jobs', { connection: redis });
-const proxyManager = ProxyManager.getInstance();
 
 export const ensureDatabaseSchema = async (pool: Pool) => {
   await pool.query(`
@@ -35,14 +32,19 @@ const initBrowser = async () => {
 };
 
 const runScraper = async (job: Job) => {
-  const { platform, url, options = {} } = job.data;
+  const { platform, url, options = {}, cookies } = job.data;
+
+  console.log(`[WORKER] Processing URL: ${url}`);
+  
   const detectedPlatform = (platform && platform !== 'auto' && platform !== 'default') ? platform : PlatformDetector.detect(url);
-  job.log(`Starting scrape for ${detectedPlatform} at ${url}`);
+  const isSocial = ['linkedin', 'instagram', 'facebook'].includes(detectedPlatform);
+
+  job.log(`Starting scrape for ${detectedPlatform} at ${url} (Version: v2.0-CORE-STABLE)`);
 
   let contextOptions: any = {};
 
   // RULE 1: SEARCH ENGINE CLOAKING
-  const isGooglebotTarget = ['linkedin', 'github', 'youtube', 'reddit'].includes(detectedPlatform);
+  const isGooglebotTarget = ['linkedin', 'github', 'youtube', 'reddit'].includes(detectedPlatform) || options.googlebot === true;
   
   if (isGooglebotTarget) {
     contextOptions = {
@@ -83,6 +85,9 @@ const runScraper = async (job: Job) => {
   }
 
   const context: BrowserContext = await browser.newContext(contextOptions);
+  if (cookies && Array.isArray(cookies)) {
+    await context.addCookies(cookies);
+  }
   const page: Page = await context.newPage();
   
   try {
@@ -104,9 +109,18 @@ const runScraper = async (job: Job) => {
       try { await SessionInjector.injectSession(detectedPlatform, context, page); } catch (e) {}
     }
 
-    const adapter = AdapterFactory.getAdapter(url, platform);
-    const result = await adapter.extract(page, url, { formats: ['markdown', 'text', 'metadata'], ...options });
-    
+    let result: any;
+    try {
+      const adapter = AdapterFactory.getAdapter(url, platform);
+      result = await adapter.extract(page, url, { formats: ['markdown', 'text', 'metadata'], ...options });
+      
+      if (!result.markdown || result.markdown.includes("No readable content found.")) {
+        throw new Error("EmptyContent");
+      }
+    } catch (innerErr: any) {
+      throw innerErr;
+    }
+
     // RECURSIVE QUEUEING: Handle Discovered Links
     if (options.isCrawl && options.currentDepth < options.maxDepth && result.internal_links) {
       const nextDepth = options.currentDepth + 1;
@@ -124,19 +138,18 @@ const runScraper = async (job: Job) => {
       }
     }
 
-    return result;
+    return {
+      title: result.title,
+      markdown: result.markdown,
+      metadata: result.metadata,
+      ...result,
+      success: true
+    };
     
   } catch (err: any) {
-    if (err.name === 'AuthWallError') {
-      await pool.query('UPDATE platform_sessions SET is_valid = false WHERE platform = $1', [detectedPlatform]);
-    }
-    if (err.name === 'BotChallengeError') {
-      options.forcePlaywright = true;
-      await job.updateData({ ...job.data, options });
-    }
     throw err;
   } finally {
-    await context.close();
+    await context.close().catch(() => {});
   }
 };
 

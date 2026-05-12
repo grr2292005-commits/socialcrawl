@@ -1,0 +1,8 @@
+{
+  "url": "https://x.com/elonmusk",
+  "formats": ["markdown"],
+  "options": {
+    "wait": true,
+    "googlebot": true
+  }
+}

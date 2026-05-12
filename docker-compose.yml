@@ -3,12 +3,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: npm run dev:api
+    command: npm run start:api
     ports:
       - "3000:3000"
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgres://postgres:password@postgres:5432/socialcrawl
+      - API_AUTH_TOKEN=LawFirmAudit_2026_Secure
     depends_on:
       - redis
       - postgres
@@ -20,7 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: npm run dev:worker
+    command: npm run start:worker
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgres://postgres:password@postgres:5432/socialcrawl

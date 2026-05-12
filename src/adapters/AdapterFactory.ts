@@ -1,6 +1,5 @@
 import { BaseAdapter } from './BaseAdapter';
 import { DefaultAdapter } from './DefaultAdapter';
-import { TwitterAdapter } from './TwitterAdapter';
 import { PlatformDetector } from './PlatformDetector';
 
 export class AdapterFactory {
@@ -10,9 +9,7 @@ export class AdapterFactory {
       : PlatformDetector.detect(url);
 
     switch (platform.toLowerCase()) {
-      case 'twitter':
-        return new TwitterAdapter();
-      // Add other adapters here (Reddit, LinkedIn, etc.)
+      // Platform-specific adapters can be added here
       default:
         return new DefaultAdapter();
     }

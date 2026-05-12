@@ -56,6 +56,9 @@ export class DefaultAdapter extends BaseAdapter {
         await page.waitForSelector('article, [data-testid="author-name"]', { timeout: 10000 }).catch(() => {});
       }
 
+      // 2.1 Lead Gen / Legal Target Waiters
+      await page.waitForSelector('.footer-contact, .office-locations, .phone-number, .contact-info', { timeout: 5000 }).catch(() => {});
+
       // 3. Human-like interaction
       await page.waitForTimeout(2000);
       try {
@@ -66,6 +69,12 @@ export class DefaultAdapter extends BaseAdapter {
       } catch (e) {}
 
       rawHtml = await page.content().catch(() => '');
+
+      // 3.1 Hydration Fallback: If content is still empty or looks like a loading state, force a long wait
+      if (!rawHtml || rawHtml.length < 1000 || rawHtml.includes('loading...')) {
+        await page.waitForTimeout(5000);
+        rawHtml = await page.content().catch(() => '');
+      }
       
       const currentUrl = page.url();
       const isAuthWall = ['/login', '/authwall', 'instagram.com/accounts/login', 'reddit.com/login'].some(p => currentUrl.includes(p));
@@ -122,6 +131,38 @@ export class DefaultAdapter extends BaseAdapter {
       }
 
       result.markdown = fallBackText.slice(0, 50).join('\n\n') || metadata.description || metadata.title || "No readable content found.";
+    }
+
+    // READABILITY CHECK & RETRY
+    if (!result.markdown || result.markdown.length < 200 || result.markdown === "No readable content found.") {
+      if (page.url() === 'about:blank') {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      }
+      
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+      await page.waitForTimeout(5000);
+      
+      rawHtml = await page.content().catch(() => '');
+      
+      const retryCleaned = ReadabilityExtractor.extract(DOMCleaner.cleanContent(rawHtml), url);
+      if (retryCleaned && retryCleaned.textContent.length > 200 && formats.includes('markdown')) {
+        result.markdown = new MarkdownFormatter().format(retryCleaned.content);
+      } else {
+        const $ = cheerio.load(rawHtml);
+        $('script, style, nav, footer, header').remove();
+        const fallBackText: string[] = [];
+        $('article, main, .main-content, .profile-view, #main, section, table, .user-profile').each((_, el) => {
+          const text = $(el).text().trim().replace(/\s+/g, ' ');
+          if (text.length > 10) fallBackText.push(text);
+        });
+        if (fallBackText.join('\n').length < 100) {
+          $('p, div').each((_, el) => {
+            const text = $(el).text().trim().replace(/\s+/g, ' ');
+            if (text.length > 20) fallBackText.push(text);
+          });
+        }
+        result.markdown = fallBackText.slice(0, 50).join('\n\n') || "No readable content found.";
+      }
     }
 
     // AUTONOMOUS SPIDERING: Link Extraction

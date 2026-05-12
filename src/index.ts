@@ -1,13 +1,11 @@
 import Fastify, { FastifyRequest } from 'fastify';
 import fastifyWebsocket, { SocketStream } from '@fastify/websocket';
-import { Queue } from 'bullmq';
+import { Queue, QueueEvents } from 'bullmq';
 import IORedis from 'ioredis';
 import { v4 as uuidv4 } from 'uuid';
 
 const fastify = Fastify({ logger: true });
 fastify.register(fastifyWebsocket);
-
-const API_KEY = process.env.API_KEY || 'dev-key-123';
 
 // Initialize Redis and Queues
 const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
@@ -15,24 +13,25 @@ const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
 });
 const scrapeQueue = new Queue('scrape-jobs', { connection: redis });
 const warmingQueue = new Queue('session-warming', { connection: redis });
-
-// SECURITY: API Key Authentication Hook
-fastify.addHook('preHandler', async (request, reply) => {
-  if (request.url === '/health') return;
-
-  const authHeader = request.headers.authorization;
-  if (!authHeader || authHeader !== `Bearer ${API_KEY}`) {
-    return reply.status(401).send({ 
-      error: 'Unauthorized', 
-      message: 'Invalid or missing API Key in Authorization header' 
-    });
-  }
-});
+const queueEvents = new QueueEvents('scrape-jobs', { connection: redis });
 
 // Helper: URL Validation
 const isValidUrl = (url: string) => {
   return url && (url.startsWith('http://') || url.startsWith('https://'));
 };
+
+// Auth Middleware
+fastify.addHook('preHandler', async (request, reply) => {
+  if (request.url === '/health') return;
+  
+  const authToken = process.env.API_AUTH_TOKEN;
+  if (!authToken) return; // Auth disabled if no token set
+
+  const authHeader = request.headers.authorization;
+  if (!authHeader || authHeader !== `Bearer ${authToken}`) {
+    return reply.status(401).send({ error: 'Unauthorized', message: 'Invalid or missing API token' });
+  }
+});
 
 // GET /health - Exempt from Auth
 fastify.get('/health', async () => {
@@ -50,17 +49,28 @@ fastify.post('/scrape', async (request, reply) => {
   const job = await scrapeQueue.add('scrape-job', {
     platform: body.platform,
     url: body.url,
+    cookies: body.cookies,
     options: body.options
   }, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 }
   });
 
-  return reply.status(202).send({
-    success: true,
-    jobId: job.id,
-    status_url: `/jobs/${job.id}`
-  });
+  try {
+    const result = await job.waitUntilFinished(queueEvents, 120000);
+    return reply.status(200).send({
+      success: true,
+      version: "v2.0-CORE-STABLE",
+      data: result
+    });
+
+  } catch (err: any) {
+    return reply.status(500).send({
+      success: false,
+      error: 'Timeout',
+      message: err.message || 'Job timed out after 120 seconds'
+    });
+  }
 });
 
 // POST /crawl
