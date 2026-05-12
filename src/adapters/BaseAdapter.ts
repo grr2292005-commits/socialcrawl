@@ -15,9 +15,12 @@ export interface ExtractionResult {
   platform: string;
   extracted_entities?: Record<string, any>[];
   chunked_content?: any[];
+  chunks?: any[];
   screenshot?: string; // base64
   internal_links?: string[];
   success?: boolean;
+  error?: string;
+  message?: string;
 }
 
 export abstract class BaseAdapter {

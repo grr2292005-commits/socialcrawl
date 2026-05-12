@@ -4,7 +4,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
-RUN npm run build && npm run obfuscate
+# RUN npm run build && npm run obfuscate
+RUN npm run build
 
 # Stage 2: Production Image (No Source Code inside)
 FROM mcr.microsoft.com/playwright:v1.59.1-jammy

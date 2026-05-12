@@ -1,9 +1,0 @@
-{
-  "socialcrawl": {
-    "command": "npx",
-    "args": ["ts-node", "${CLAUDE_PLUGIN_ROOT}/src/mcp-server.ts"],
-    "env": {
-      "SOCIALCRAWL_API_URL": "http://localhost:3000"
-    }
-  }
-}

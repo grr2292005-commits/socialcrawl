@@ -132,6 +132,9 @@ const runScraper = async (job: Job) => {
     }
 
     const adapter = AdapterFactory.getAdapter(url, platform);
+    console.log(`[WORKER] Selected Adapter: ${adapter.constructor.name} for platform: ${detectedPlatform}`);
+    console.log(`[WORKER] Cookies provided: ${cookies ? cookies.length : 0}`);
+
     const result = await adapter.extract(page, url, { formats: ['markdown', 'text', 'metadata'], ...options });
     
     const finalResult: any = {

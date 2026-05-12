@@ -46,12 +46,18 @@ fastify.post('/scrape', async (request, reply) => {
     return reply.status(400).send({ error: 'Bad Request', message: 'Invalid or missing URL' });
   }
 
-  const job = await scrapeQueue.add('scrape-job', {
+  const cookies = body.cookies || body.options?.cookies;
+  console.log(`[API] Received scrape request for ${body.url} with ${cookies ? cookies.length : 0} cookies`);
+
+  const jobData = {
     platform: body.platform,
     url: body.url,
-    cookies: body.cookies,
+    cookies: cookies,
     options: body.options
-  }, {
+  };
+  console.log(`[API] Adding job to queue with keys: ${Object.keys(jobData).join(', ')}`);
+
+  const job = await scrapeQueue.add('scrape-job', jobData, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 }
   });
@@ -60,7 +66,7 @@ fastify.post('/scrape', async (request, reply) => {
     const result = await job.waitUntilFinished(queueEvents, 120000);
     return reply.status(200).send({
       success: true,
-      version: "v3.0-FIRECRAWL-KILLER",
+      version: "v4.8-HYBRID-SUCCESS",
       data: result
     });
 
@@ -90,15 +96,14 @@ fastify.post('/crawl', async (request, reply) => {
       maxPages
     } 
   }, {
-    attempts: 1,
-    timeout: 300000
+    attempts: 1
   });
 
   try {
     const result = await job.waitUntilFinished(queueEvents, 300000);
     return reply.status(200).send({
       success: true,
-      version: "v3.0-FIRECRAWL-KILLER",
+      version: "v4.8-HYBRID-SUCCESS",
       data: result
     });
   } catch (err: any) {
@@ -183,6 +188,7 @@ fastify.register(async function (app) {
 
 const start = async () => {
   try {
+    console.log('--- SOCIALCRAWL API STARTING (VER: 4.1.0-DEBUG) ---');
     await fastify.listen({ port: 3000, host: '0.0.0.0' });
     fastify.log.info('API Gateway started on port 3000');
   } catch (err) {
