@@ -84,14 +84,9 @@ const warmSession = async (job: Job) => {
     }
 
     const cookies = await context.cookies();
-    const localStorage = await page.evaluate(() => {
-      const ls: Record<string, string> = {};
-      for (let i = 0; i < window.localStorage.length; i++) {
-        const key = window.localStorage.key(i);
-        if (key) ls[key] = window.localStorage.getItem(key) || '';
-      }
-      return ls;
-    });
+    
+    // Extraction of localStorage is permanently disabled to prevent ReferenceErrors
+    const localStorage = {}; 
 
     const query = `
       INSERT INTO platform_sessions (id, platform, cookies, local_storage, is_valid, is_blocked, last_validated)

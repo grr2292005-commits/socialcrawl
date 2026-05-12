@@ -3,67 +3,66 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 
 export class MarkdownFormatter {
-  private turndownService: TurndownService;
+  private turndown: TurndownService;
 
   constructor() {
-    this.turndownService = new TurndownService({
+    this.turndown = new TurndownService({
       headingStyle: 'atx',
-      hr: '---',
-      bulletListMarker: '-',
-      codeBlockStyle: 'fenced'
+      codeBlockStyle: 'fenced',
+      hr: '---'
     });
 
-    // Use Github Flavored Markdown for tables, strikethrough, etc.
-    this.turndownService.use(gfm);
+    this.turndown.use(gfm);
 
-    // Custom rules to preserve more structure for LLMs
-    
-    // Clean up links: preserve text if href is useless, otherwise format normally
-    this.turndownService.addRule('preserveLinks', {
-      filter: ['a'],
-      replacement: (content, node) => {
-        const element = node as HTMLAnchorElement;
-        const href = element.getAttribute('href');
-        const text = content.trim();
-        
-        if (!text) return ''; // Remove empty links
-        if (!href || href.startsWith('javascript:') || href === '#') {
-          return text;
-        }
-        return `[${text}](${href})`;
-      }
+    // Strip empty links
+    this.turndown.addRule('strip-empty-links', {
+      filter: (node) => {
+        return node.nodeName === 'A' && (!node.textContent || node.textContent.trim() === '');
+      },
+      replacement: () => ''
     });
 
-    // Preserve images with alt text, but drop tracking pixels
-    this.turndownService.addRule('preserveImages', {
-      filter: ['img'],
-      replacement: (content, node) => {
-        const element = node as HTMLImageElement;
-        const src = element.getAttribute('src');
-        const alt = element.getAttribute('alt') || '';
-        
-        if (!src || src.startsWith('data:') || src.includes('pixel') || src.includes('tracker')) {
-          return ''; 
+    // Remove buttons/links that look like navigation even if missed by DOMCleaner
+    this.turndown.addRule('strip-nav-like', {
+      filter: (node) => {
+        if (node.nodeName === 'A' || node.nodeName === 'BUTTON') {
+          const text = node.textContent?.trim().toLowerCase() || '';
+          return ['sign in', 'log in', 'sign up', 'get started', 'pricing', 'contact sales', 'developers', 'solutions', 'products'].includes(text) && node.parentNode?.nodeName === 'LI';
         }
-        return `![${alt}](${src})`;
+        return false;
+      },
+      replacement: () => ''
+    });
+    // Remove redundant image alt text if it matches the filename or is too generic
+    this.turndown.addRule('clean-image-alts', {
+      filter: (node) => {
+        if (node.nodeName === 'IMG') {
+          const alt = node.getAttribute('alt')?.trim() || '';
+          return alt.length < 3 || /^\d+$/.test(alt);
+        }
+        return false;
+      },
+      replacement: (content, node: any) => {
+        const src = node.getAttribute('src');
+        return src ? `![](${src})` : '';
       }
     });
   }
 
   public format(html: string): string {
     if (!html) return '';
-    try {
-      let markdown = this.turndownService.turndown(html);
-      
-      // LLM Optimization: Remove excessive newlines
-      markdown = markdown.replace(/\n{3,}/g, '\n\n');
-      // LLM Optimization: Remove trailing spaces
-      markdown = markdown.replace(/ \n/g, '\n');
-      
-      return markdown.trim();
-    } catch (e) {
-      console.error('Failed to format markdown', e);
-      return '';
-    }
+    let markdown = this.turndown.turndown(html);
+    
+    // Squash excessive newlines
+    markdown = markdown.replace(/\n{3,}/g, '\n\n');
+    
+    // Remove lines that are just navigation bullet points or separators
+    markdown = markdown.split('\n').filter(line => {
+      const clean = line.trim();
+      if (clean === '*' || clean === '-' || clean === '•') return false;
+      return true;
+    }).join('\n');
+
+    return markdown.trim();
   }
 }

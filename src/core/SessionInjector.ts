@@ -7,18 +7,20 @@ const pool = new Pool({
 
 export class SessionInjector {
   /**
-   * Fetches a valid session for the given platform and injects its cookies and localStorage
-   * into the provided Playwright BrowserContext and Page.
+   * Fetches a valid session for the given platform and injects its cookies
+   * into the provided Playwright BrowserContext.
    * 
-   * @param platform The platform name (e.g., 'twitter')
+   * NOTE: localStorage injection is permanently disabled to prevent page-level ReferenceErrors.
+   * 
+   * @param platform The platform name (e.g., 'linkedin')
    * @param context The Playwright BrowserContext to inject cookies into
-   * @param page The Playwright Page to inject localStorage into (must be navigated to the domain first)
+   * @param _page Playwright Page (unused)
    * @returns boolean indicating if a session was successfully injected
    */
-  public static async injectSession(platform: string, context: BrowserContext, page: Page): Promise<boolean> {
+  public static async injectSession(platform: string, context: BrowserContext, _page: Page): Promise<boolean> {
     try {
       const query = `
-        SELECT id, cookies, local_storage 
+        SELECT id, cookies 
         FROM platform_sessions 
         WHERE platform = $1 AND is_valid = true 
         ORDER BY last_validated DESC 
@@ -27,31 +29,19 @@ export class SessionInjector {
       const result = await pool.query(query, [platform]);
 
       if (result.rows.length === 0) {
-        console.log(`[SessionInjector] No valid session found for platform: ${platform}`);
         return false;
       }
 
       const session = result.rows[0];
-      console.log(`[SessionInjector] Found valid session ${session.id} for ${platform}`);
 
-      // 1. Inject Cookies
+      // 1. Inject Cookies (Safe native Playwright method)
       if (session.cookies) {
         const cookies = typeof session.cookies === 'string' ? JSON.parse(session.cookies) : session.cookies;
         await context.addCookies(cookies);
       }
 
-      // 2. Inject Local Storage
-      // Note: page must already be navigated to the target origin for localStorage to be set correctly.
-      if (session.local_storage) {
-        const localStorageData = typeof session.local_storage === 'string' ? JSON.parse(session.local_storage) : session.local_storage;
-        
-        await page.evaluate((lsData: Record<string, string>) => {
-          for (const key in lsData) {
-            window.localStorage.setItem(key, lsData[key]);
-          }
-        }, localStorageData);
-      }
-
+      // 2. Local Storage injection removed to ensure bulletproof execution
+      
       return true;
     } catch (error) {
       console.error(`[SessionInjector] Failed to inject session:`, error);

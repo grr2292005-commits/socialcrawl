@@ -37,13 +37,10 @@ const runScraper = async (job: Job) => {
   console.log(`[WORKER] Processing URL: ${url}`);
   
   const detectedPlatform = (platform && platform !== 'auto' && platform !== 'default') ? platform : PlatformDetector.detect(url);
-  const isSocial = ['linkedin', 'instagram', 'facebook'].includes(detectedPlatform);
-
-  job.log(`Starting scrape for ${detectedPlatform} at ${url} (Version: v2.0-CORE-STABLE)`);
+  job.log(`Starting scrape for ${detectedPlatform} at ${url} (Version: v3.0-FIRECRAWL-KILLER)`);
 
   let contextOptions: any = {};
-
-  // RULE 1: SEARCH ENGINE CLOAKING
+  // ... (keep the contextOptions logic the same as before)
   const isGooglebotTarget = ['linkedin', 'github', 'youtube', 'reddit'].includes(detectedPlatform) || options.googlebot === true;
   
   if (isGooglebotTarget) {
@@ -77,7 +74,6 @@ const runScraper = async (job: Job) => {
     };
   }
 
-  // RULE 3: PROXY MANAGER FOR PROTECTED PLATFORMS
   const needsResidential = ['producthunt', 'github', 'reddit'].includes(detectedPlatform);
   if (needsResidential && process.env.RESIDENTIAL_PROXY) {
     job.log(`Routing ${detectedPlatform} through residential proxy`);
@@ -91,60 +87,63 @@ const runScraper = async (job: Job) => {
   const page: Page = await context.newPage();
   
   try {
-    // Multi-Step Warmup for Protected Platforms
-    if (detectedPlatform === 'producthunt') {
-      await page.goto('https://www.producthunt.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(3000);
-    } else if (detectedPlatform === 'medium') {
-      // PASSIVE WARMUP: Start at Google
-      await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-      await page.waitForTimeout(2000);
-    } else if (['github', 'reddit'].includes(detectedPlatform)) {
-      const home = detectedPlatform === 'github' ? 'https://github.com' : 'https://old.reddit.com';
-      await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(4000);
+    if (options.isCrawl) {
+      const results: any[] = [];
+      const visited = new Set<string>();
+      const queue = [{ url, depth: 0 }];
+      const maxPages = options.maxPages || 5;
+      const maxDepth = options.maxDepth || 1;
+
+      while (queue.length > 0 && results.length < maxPages) {
+        const current = queue.shift()!;
+        if (visited.has(current.url)) continue;
+        visited.add(current.url);
+
+        job.log(`Spidering: ${current.url} (Depth: ${current.depth}/${maxDepth}, Progress: ${results.length + 1}/${maxPages})`);
+        
+        try {
+          const adapter = AdapterFactory.getAdapter(current.url, platform);
+          const result = await adapter.extract(page, current.url, options);
+          
+          results.push({
+            url: current.url,
+            title: result.title,
+            markdown: result.markdown,
+            metadata: result.metadata
+          });
+
+          if (current.depth < maxDepth && result.internal_links) {
+            for (const link of result.internal_links) {
+              if (!visited.has(link)) {
+                queue.push({ url: link, depth: current.depth + 1 });
+              }
+            }
+          }
+        } catch (e: any) {
+          job.log(`Spider failed at ${current.url}: ${e.message}`);
+        }
+      }
+      return results;
     }
 
+    // Standard single-page scrape logic
     if (detectedPlatform && detectedPlatform !== 'default') {
       try { await SessionInjector.injectSession(detectedPlatform, context, page); } catch (e) {}
     }
 
-    let result: any;
-    try {
-      const adapter = AdapterFactory.getAdapter(url, platform);
-      result = await adapter.extract(page, url, { formats: ['markdown', 'text', 'metadata'], ...options });
-      
-      if (!result.markdown || result.markdown.includes("No readable content found.")) {
-        throw new Error("EmptyContent");
-      }
-    } catch (innerErr: any) {
-      throw innerErr;
-    }
-
-    // RECURSIVE QUEUEING: Handle Discovered Links
-    if (options.isCrawl && options.currentDepth < options.maxDepth && result.internal_links) {
-      const nextDepth = options.currentDepth + 1;
-      const linksToQueue = result.internal_links.slice(0, options.maxPages);
-      
-      for (const link of linksToQueue) {
-        await scrapeQueue.add('scrape-job', {
-          platform,
-          url: link,
-          options: { ...options, currentDepth: nextDepth }
-        }, {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 }
-        });
-      }
-    }
-
-    return {
+    const adapter = AdapterFactory.getAdapter(url, platform);
+    const result = await adapter.extract(page, url, { formats: ['markdown', 'text', 'metadata'], ...options });
+    
+    const finalResult: any = {
       title: result.title,
       markdown: result.markdown,
       metadata: result.metadata,
-      ...result,
       success: true
     };
+    if (result.chunks) {
+      finalResult.chunks = result.chunks;
+    }
+    return finalResult;
     
   } catch (err: any) {
     throw err;

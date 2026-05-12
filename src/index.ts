@@ -60,7 +60,7 @@ fastify.post('/scrape', async (request, reply) => {
     const result = await job.waitUntilFinished(queueEvents, 120000);
     return reply.status(200).send({
       success: true,
-      version: "v2.0-CORE-STABLE",
+      version: "v3.0-FIRECRAWL-KILLER",
       data: result
     });
 
@@ -75,34 +75,39 @@ fastify.post('/scrape', async (request, reply) => {
 
 // POST /crawl
 fastify.post('/crawl', async (request, reply) => {
-  const { url, maxDepth = 2, maxPages = 10, options = {} } = request.body as any;
+  const { url, maxDepth = 1, maxPages = 5, options = {} } = request.body as any;
   
   if (!isValidUrl(url)) {
     return reply.status(400).send({ error: 'Bad Request', message: 'Invalid or missing URL' });
   }
 
-  const crawlId = uuidv4();
   const job = await scrapeQueue.add('scrape-job', { 
     url, 
     options: { 
       ...options,
       isCrawl: true, 
       maxDepth, 
-      currentDepth: 0, 
-      maxPages, 
-      crawlId 
+      maxPages
     } 
   }, {
-    attempts: 3,
-    backoff: { type: 'exponential', delay: 5000 }
+    attempts: 1,
+    timeout: 300000
   });
 
-  return reply.status(202).send({
-    success: true,
-    crawlId,
-    initialJobId: job.id,
-    status_url: `/jobs/${job.id}`
-  });
+  try {
+    const result = await job.waitUntilFinished(queueEvents, 300000);
+    return reply.status(200).send({
+      success: true,
+      version: "v3.0-FIRECRAWL-KILLER",
+      data: result
+    });
+  } catch (err: any) {
+    return reply.status(500).send({
+      success: false,
+      error: 'Crawl Timeout',
+      message: err.message || 'Crawl job timed out after 5 minutes'
+    });
+  }
 });
 
 // POST /warm
