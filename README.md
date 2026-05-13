@@ -30,7 +30,7 @@ The minimal viable product is fully containerized.
     ```bash
     curl -X POST http://localhost:3000/scrape \
       -H "Content-Type: application/json" \
-      -d '{"platform": "twitter", "url": "https://x.com/elonmusk", "type": "profile"}'
+      -d '{"platform": "linkedin", "url": "https://www.linkedin.com/in/williamhgates", "options": {"formats": ["markdown"]}}'
     ```
 
 ## 🤖 Model Context Protocol (MCP) Integration
@@ -64,10 +64,11 @@ SocialCrawl provides a built-in MCP server, allowing AI agents (like Claude Code
 *   [x] Interface definitions for Platform SDK
 
 ### Phase 2: Anti-Bot & Data Pipelines
+*   [x] LinkedIn Adapter Implementation (Profile extraction, session injection)
 *   [ ] Integrate BrightData / Oxylabs proxy rotation module.
 *   [ ] Implement PostgreSQL for job persistence and session warming.
 *   [ ] Build the LLM Formatter (Turndown for Markdown, custom chunking for vector DBs).
-*   [ ] Develop the first concrete adapter: `TwitterScraper` (handling guest token fetching and scrolling).
+*   [ ] Develop the first concrete adapter: `LinkedInAdapter` (handling authentication and scrolling).
 
 ### Phase 3: Scale & Enterprise
 *   [ ] Multi-node Kubernetes deployment with KEDA autoscaling.
